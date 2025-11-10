@@ -17,7 +17,6 @@
 
 // LLVM Support
 #include <llvm/Demangle/Demangle.h>
-#include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
@@ -46,7 +45,6 @@ struct RuFuS::Impl {
     void initialize_target();
     void initialize_pass_managers();
     llvm::Function *find_function_by_demangled_name(const std::string &target);
-    llvm::Constant *find_constant_by_debug_info(llvm::Function *F, const std::string &var_name, int new_value);
     llvm::FunctionType *create_specialized_function_type(llvm::Function *F, const std::set<unsigned> &args_to_remove);
     std::string create_specialized_name(const std::string &demangled_name,
                                         const std::map<std::string, int> &const_args);
@@ -203,29 +201,6 @@ void RuFuS::Impl::specialize_internal_variables(llvm::Function *F, const std::ma
         // Replace all uses with the constant value
         replace_alloca_with_constant(AI, const_val);
     }
-}
-
-llvm::Constant *RuFuS::Impl::find_constant_by_debug_info(llvm::Function *F, const std::string &var_name,
-                                                         int new_value) {
-    // Iterate through debug info to find where variable was declared
-    for (llvm::BasicBlock &BB : *F) {
-        for (llvm::Instruction &I : BB) {
-            if (auto *DVI = llvm::dyn_cast<llvm::DbgValueInst>(&I)) {
-                if (auto *DIVar = DVI->getVariable()) {
-                    if (DIVar->getName() == var_name) {
-                        // Found the variable in debug info
-                        // Now trace its uses
-                        llvm::Value *V = DVI->getValue();
-                        if (auto *CI = llvm::dyn_cast<llvm::Constant>(V)) {
-                            // This constant replaced the variable
-                            return CI;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return nullptr;
 }
 
 llvm::Function *RuFuS::Impl::clone_and_specialize_arguments(llvm::Function *F,
@@ -401,7 +376,7 @@ RuFuS &RuFuS::print_debug_info() {
     return *this;
 }
 
-std::ptrdiff_t RuFuS::compile(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
+std::uintptr_t RuFuS::compile(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
     std::string specialized_name = impl->create_specialized_name(demangled_name, const_args);
 
     if (!impl->find_function_by_demangled_name(specialized_name)) {
@@ -411,7 +386,7 @@ std::ptrdiff_t RuFuS::compile(const std::string &demangled_name, const std::map<
     return compile(specialized_name);
 }
 
-std::ptrdiff_t RuFuS::compile(const std::string &demangled_name) {
+std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
     // Initialize JIT lazily
     if (!impl->JIT) {
         auto jit_or_err = llvm::orc::LLJITBuilder().create();

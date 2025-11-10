@@ -1,6 +1,8 @@
 #ifndef RUFUS_HPP
 #define RUFUS_HPP
 
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -24,15 +26,25 @@ class RuFuS {
 
     RuFuS &load_ir_file(const std::string &ir_file);
     RuFuS &load_ir_string(const std::string &ir_source);
-    RuFuS &specialize_function(const std::string &demangled_name,
-                                            const std::map<std::string, int> &const_args);
+    RuFuS &specialize_function(const std::string &demangled_name, const std::map<std::string, int> &const_args);
     RuFuS &optimize();
 
-    std::ptrdiff_t compile(const std::string &demangled_name, const std::map<std::string, int> &const_args);
-    std::ptrdiff_t compile(const std::string &demangled_name);
+    template <typename FuncType>
+    FuncType compile(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
+        return reinterpret_cast<FuncType>(compile(demangled_name, const_args));
+    };
+
+    template <typename FuncType>
+    FuncType compile(const std::string &demangled_name) {
+        return reinterpret_cast<FuncType>(compile(demangled_name));
+    };
 
     RuFuS &print_module_ir();
     RuFuS &print_debug_info();
+
+  private:
+    std::uintptr_t compile(const std::string &demangled_name, const std::map<std::string, int> &const_args);
+    std::uintptr_t compile(const std::string &demangled_name);
 };
 
 #endif

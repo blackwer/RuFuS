@@ -30,7 +30,7 @@ function(add_llvm_ir_target source_file)
     set(output_file ${CMAKE_CURRENT_BINARY_DIR}/${basename}.ll)
     add_custom_command(
         OUTPUT ${output_file}
-        COMMAND clang++ -S -emit-llvm -O0 -g -Xclang -disable-llvm-passes -fno-discard-value-names
+        COMMAND clang++ -S -emit-llvm -O0 -Xclang -disable-llvm-passes -fno-discard-value-names
                 ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
                 -o ${output_file}
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
