@@ -20,6 +20,27 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
+// Core Pass Infrastructure
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/Passes/PassBuilder.h>
+
+// Individual Optimization Passes
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar/DCE.h>
+#include <llvm/Transforms/Scalar/EarlyCSE.h>
+#include <llvm/Transforms/Scalar/LICM.h>
+#include <llvm/Transforms/Scalar/LoopRotation.h>
+#include <llvm/Transforms/Scalar/LoopUnrollPass.h>
+#include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
+#include <llvm/Transforms/Vectorize/LoopVectorize.h>
+#include <llvm/Transforms/Vectorize/SLPVectorizer.h>
+
+// Pass Adaptors
+#include <llvm/Transforms/Scalar/LoopPassManager.h>
+
 #include <algorithm>
 #include <memory>
 #include <sstream>
@@ -52,7 +73,7 @@ struct RuFuS::Impl {
     llvm::Function *clone_and_specialize_arguments(llvm::Function *F, const std::map<std::string, int> &const_args,
                                                    const std::string &specialized_name);
     void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
-
+    void optimize_function(llvm::Function *F);
     void disable_optimizations();
 };
 
@@ -329,17 +350,63 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
     return *this;
 }
 
+void RuFuS::Impl::optimize_function(llvm::Function *F) {
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    llvm::PassBuilder PB(TM.get());
+
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::FunctionPassManager FPM;
+
+    // Add the key optimization passes in the right order
+    FPM.addPass(llvm::PromotePass());
+    FPM.addPass(llvm::InstCombinePass());
+    FPM.addPass(llvm::SimplifyCFGPass());
+    FPM.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+    FPM.addPass(llvm::EarlyCSEPass(true));
+
+    // Loop optimization with MemorySSA enabled
+    llvm::LoopPassManager LPM;
+    LPM.addPass(llvm::LoopRotatePass());
+
+    // Use LICMOptions with MemorySSA enabled
+    llvm::LICMOptions LICMOpts;
+    LPM.addPass(llvm::LICMPass(LICMOpts));
+    FPM.addPass(llvm::createFunctionToLoopPassAdaptor(std::move(LPM), true));
+
+    // Vectorization
+    FPM.addPass(llvm::LoopVectorizePass());
+    FPM.addPass(llvm::SLPVectorizerPass());
+
+    // Loop unrolling
+    FPM.addPass(llvm::LoopUnrollPass());
+
+    // Cleanup
+    FPM.addPass(llvm::InstCombinePass());
+    FPM.addPass(llvm::SimplifyCFGPass());
+    FPM.addPass(llvm::DCEPass());
+
+    FPM.run(*F, FAM);
+}
+
 RuFuS &RuFuS::optimize() {
     if (!impl->M)
         return *this;
 
-    impl->M->setTargetTriple(impl->target_triple);
-    impl->M->setDataLayout(impl->TM->createDataLayout());
+    for (llvm::Function &F : *impl->M) {
+        if (!F.isDeclaration() && !F.hasFnAttribute(llvm::Attribute::OptimizeNone)) {
+            impl->optimize_function(&F);
+        }
+    }
 
-    llvm::ModulePassManager MPM =
-        llvm::PassBuilder(impl->TM.get()).buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
-
-    MPM.run(*impl->M, impl->MAM);
     return *this;
 }
 
