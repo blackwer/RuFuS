@@ -28,6 +28,7 @@ int main(int argc, char **argv) {
     RS.load_ir_file(ir_file)
         .specialize_function("hot_loop(float*,int)", {{"N", 64}})
         .specialize_function("hot_loop(float*,int)", {{"N", 65}})
+        .specialize_function("hot_loop_const(float*)", {{"N", 64}})
         .optimize();
 
     test_jit<64>(RS);
@@ -40,7 +41,7 @@ int main(int argc, char **argv) {
     RS.print_debug_info();
 
     // Optional: print final module IR
-    // RS.print_module_ir();
+    RS.print_module_ir();
 
     return 0;
 }

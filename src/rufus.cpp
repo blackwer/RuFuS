@@ -1,6 +1,5 @@
 #include <rufus.hpp>
 
-// Standard Library
 #include <algorithm>
 #include <cassert>
 #include <iostream>
@@ -11,14 +10,13 @@
 #include <string>
 #include <vector>
 
-// Helper function
 std::string RuntimeSpecializer::create_specialized_name(const std::string &demangled_name,
                                                         const std::map<std::string, int> &const_args) {
     size_t paren_pos = demangled_name.find('(');
     std::string basename = demangled_name.substr(0, paren_pos);
 
     std::ostringstream oss;
-    oss << basename << "_RTI";
+    oss << basename << "_RFS";
     for (const auto &[name, value] : const_args)
         oss << "_" << name << "_" << value;
 
@@ -102,26 +100,102 @@ llvm::FunctionType *RuntimeSpecializer::create_specialized_function_type(llvm::F
     return llvm::FunctionType::get(F->getReturnType(), new_param_types, F->isVarArg());
 }
 
-llvm::Function *RuntimeSpecializer::specialize_cloned_function(llvm::Function *F,
-                                                               const std::map<std::string, int> &const_args,
-                                                               const std::string &specialized_name) {
+void RuntimeSpecializer::replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal) {
 
-    // Map argument names to indices
-    std::map<std::string, unsigned> arg_indices;
-    unsigned idx = 0;
-    for (auto &Arg : F->args())
-        arg_indices[Arg.getName().str()] = idx++;
+    llvm::SmallVector<llvm::Instruction *, 16> to_remove;
 
-    // Determine which arguments to remove and their values
+    // Collect all users and replace loads, mark stores for deletion
+    for (llvm::User *U : llvm::make_early_inc_range(AI->users())) {
+        if (auto *LI = llvm::dyn_cast<llvm::LoadInst>(U)) {
+            // Replace load with constant
+            LI->replaceAllUsesWith(ConstVal);
+            to_remove.push_back(LI);
+        } else if (auto *SI = llvm::dyn_cast<llvm::StoreInst>(U)) {
+            // Mark store for removal
+            to_remove.push_back(SI);
+        }
+    }
+
+    // Remove dead instructions
+    for (llvm::Instruction *I : to_remove) {
+        I->eraseFromParent();
+    }
+
+    // Remove the alloca itself
+    AI->eraseFromParent();
+}
+
+void RuntimeSpecializer::specialize_internal_variables(llvm::Function *F,
+                                                       const std::map<std::string, int> &const_vars) {
+
+    if (const_vars.empty())
+        return;
+
+    // Find allocas with matching names and replace their stores/loads
+    llvm::SmallVector<llvm::AllocaInst *, 8> allocas_to_process;
+
+    for (llvm::BasicBlock &BB : *F) {
+        for (llvm::Instruction &I : BB) {
+            if (auto *AI = llvm::dyn_cast<llvm::AllocaInst>(&I)) {
+                std::string var_name = AI->getName().str();
+                if (const_vars.count(var_name)) {
+                    allocas_to_process.push_back(AI);
+                }
+            }
+        }
+    }
+
+    // Process each matching alloca
+    for (llvm::AllocaInst *AI : allocas_to_process) {
+        std::string var_name = AI->getName().str();
+        int const_value = const_vars.at(var_name);
+
+        llvm::Type *alloca_type = AI->getAllocatedType();
+        llvm::Constant *const_val = llvm::ConstantInt::get(alloca_type, const_value);
+
+        // Replace all uses with the constant value
+        replace_alloca_with_constant(AI, const_val);
+    }
+}
+
+llvm::Constant *RuntimeSpecializer::find_constant_by_debug_info(llvm::Function *F, const std::string &var_name,
+                                                                int new_value) {
+    // Iterate through debug info to find where variable was declared
+    for (llvm::BasicBlock &BB : *F) {
+        for (llvm::Instruction &I : BB) {
+            if (auto *DVI = llvm::dyn_cast<llvm::DbgValueInst>(&I)) {
+                if (auto *DIVar = DVI->getVariable()) {
+                    if (DIVar->getName() == var_name) {
+                        // Found the variable in debug info
+                        // Now trace its uses
+                        llvm::Value *V = DVI->getValue();
+                        if (auto *CI = llvm::dyn_cast<llvm::Constant>(V)) {
+                            // This constant replaced the variable
+                            return CI;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+llvm::Function *RuntimeSpecializer::clone_and_specialize_arguments(
+    llvm::Function *F, const std::map<std::string, int> &const_function_args, const std::string &specialized_name) {
+
+    // Build argument specialization info
     std::set<unsigned> args_to_remove;
     std::map<unsigned, int> arg_values;
+    unsigned idx = 0;
 
-    for (const auto &[arg_name, value] : const_args) {
-        if (arg_indices.count(arg_name)) {
-            unsigned arg_idx = arg_indices[arg_name];
-            args_to_remove.insert(arg_idx);
-            arg_values[arg_idx] = value;
+    for (auto &Arg : F->args()) {
+        std::string arg_name = Arg.getName().str();
+        if (const_function_args.count(arg_name)) {
+            args_to_remove.insert(idx);
+            arg_values[idx] = const_function_args.at(arg_name);
         }
+        idx++;
     }
 
     // Create new function with reduced signature
@@ -129,10 +203,6 @@ llvm::Function *RuntimeSpecializer::specialize_cloned_function(llvm::Function *F
     llvm::Function *new_func = llvm::Function::Create(new_type, F->getLinkage(), specialized_name, M.get());
 
     new_func->copyAttributesFrom(F);
-    new_func->removeFnAttr(llvm::Attribute::OptimizeNone);
-    new_func->removeFnAttr(llvm::Attribute::NoInline);
-    new_func->addFnAttr("target-cpu", CPU);
-    new_func->addFnAttr("target-features", Features.getString());
 
     // Map old arguments to new arguments or constants
     llvm::ValueToValueMapTy VMap;
@@ -189,16 +259,41 @@ RuntimeSpecializer &RuntimeSpecializer::load_ir_string(const std::string &ir_sou
 
 RuntimeSpecializer &RuntimeSpecializer::specialize_function(const std::string &demangled_name,
                                                             const std::map<std::string, int> &const_args) {
-
     llvm::Function *F = find_function_by_demangled_name(demangled_name);
     if (!F) {
         llvm::errs() << "Function not found: " << demangled_name << "\n";
         return *this;
     }
 
-    std::string specialized_name = create_specialized_name(demangled_name, const_args);
-    llvm::Function *specialized_func = specialize_cloned_function(F, const_args, specialized_name);
+    // Separate const_args into arguments vs internal variables
+    std::map<std::string, int> const_function_args;
+    std::map<std::string, int> const_internal_vars;
 
+    for (const auto &[name, value] : const_args) {
+        bool is_arg = false;
+        for (auto &Arg : F->args()) {
+            if (Arg.getName() == name) {
+                const_function_args[name] = value;
+                is_arg = true;
+                break;
+            }
+        }
+        if (!is_arg) {
+            const_internal_vars[name] = value;
+        }
+    }
+
+    const std::string specialized_name = create_specialized_name(demangled_name, const_args);
+    llvm::Function *specialized_func = clone_and_specialize_arguments(F, const_function_args, specialized_name);
+
+    specialize_internal_variables(specialized_func, const_internal_vars);
+
+    // Enable native optimizations on the specialized function
+    specialized_func->removeFnAttr(llvm::Attribute::OptimizeNone);
+    specialized_func->removeFnAttr(llvm::Attribute::NoInline);
+    specialized_func->addFnAttr("target-cpu", CPU);
+    specialized_func->addFnAttr("target-features", Features.getString());
+    
     llvm::outs() << "Created: " << specialized_name << " (args: " << F->arg_size() << " -> "
                  << specialized_func->arg_size() << ")\n";
 

@@ -23,6 +23,7 @@
 #include <llvm/Demangle/Demangle.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 
 class RuntimeSpecializer {
   private:
@@ -50,11 +51,18 @@ class RuntimeSpecializer {
 
     llvm::Function *find_function_by_demangled_name(const std::string &target);
 
+    llvm::Constant *find_constant_by_debug_info(llvm::Function *F, const std::string &var_name, int new_value);
+
     llvm::FunctionType *create_specialized_function_type(llvm::Function *F, const std::set<unsigned> &args_to_remove);
 
-    llvm::Function *specialize_cloned_function(llvm::Function *F, const std::map<std::string, int> &const_args,
-                                               const std::string &specialized_name);
     std::string create_specialized_name(const std::string &demangled_name, const std::map<std::string, int> &const_args);
+
+    void replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal);
+
+    llvm::Function *clone_and_specialize_arguments(llvm::Function *F, const std::map<std::string, int> &const_args,
+                                                   const std::string &specialized_name);
+
+    void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
 
   public:
     RuntimeSpecializer();
