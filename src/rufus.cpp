@@ -1,17 +1,65 @@
 #include <rufus.hpp>
 
+// LLVM Core
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IRReader/IRReader.h>
+
+// LLVM Passes and Optimization
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/TargetParser/Host.h>
+
+// LLVM JIT
+#include <llvm/ExecutionEngine/Orc/LLJIT.h>
+
+// LLVM Support
+#include <llvm/Demangle/Demangle.h>
+#include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/Utils/Cloning.h>
+
 #include <algorithm>
-#include <cassert>
-#include <iostream>
-#include <map>
 #include <memory>
-#include <set>
 #include <sstream>
 #include <string>
-#include <vector>
 
-std::string RuntimeSpecializer::create_specialized_name(const std::string &demangled_name,
-                                                        const std::map<std::string, int> &const_args) {
+// Private interface
+struct RuFuS::Impl {
+    llvm::LLVMContext Ctx;
+    llvm::SMDiagnostic Err;
+    std::unique_ptr<llvm::Module> M;
+    std::unique_ptr<llvm::orc::LLJIT> JIT;
+    std::unique_ptr<llvm::TargetMachine> TM;
+
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    std::string target_triple;
+    std::string CPU;
+    llvm::SubtargetFeatures Features;
+
+    void initialize_target();
+    void initialize_pass_managers();
+    llvm::Function *find_function_by_demangled_name(const std::string &target);
+    llvm::Constant *find_constant_by_debug_info(llvm::Function *F, const std::string &var_name, int new_value);
+    llvm::FunctionType *create_specialized_function_type(llvm::Function *F, const std::set<unsigned> &args_to_remove);
+    std::string create_specialized_name(const std::string &demangled_name,
+                                        const std::map<std::string, int> &const_args);
+    void replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal);
+    llvm::Function *clone_and_specialize_arguments(llvm::Function *F, const std::map<std::string, int> &const_args,
+                                                   const std::string &specialized_name);
+    void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
+
+    void disable_optimizations();
+};
+
+std::string RuFuS::Impl::create_specialized_name(const std::string &demangled_name,
+                                                 const std::map<std::string, int> &const_args) {
     size_t paren_pos = demangled_name.find('(');
     std::string basename = demangled_name.substr(0, paren_pos);
 
@@ -23,7 +71,7 @@ std::string RuntimeSpecializer::create_specialized_name(const std::string &deman
     return oss.str();
 }
 
-void RuntimeSpecializer::initialize_target() {
+void RuFuS::Impl::initialize_target() {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
@@ -46,7 +94,7 @@ void RuntimeSpecializer::initialize_target() {
     }
 }
 
-void RuntimeSpecializer::initialize_pass_managers() {
+void RuFuS::Impl::initialize_pass_managers() {
     llvm::PassBuilder PB(TM.get());
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
@@ -55,14 +103,14 @@ void RuntimeSpecializer::initialize_pass_managers() {
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 }
 
-void RuntimeSpecializer::disable_optimizations() {
+void RuFuS::Impl::disable_optimizations() {
     for (auto &F : M->functions()) {
         if (!F.isDeclaration())
             F.addFnAttr(llvm::Attribute::OptimizeNone);
     }
 }
 
-llvm::Function *RuntimeSpecializer::find_function_by_demangled_name(const std::string &target) {
+llvm::Function *RuFuS::Impl::find_function_by_demangled_name(const std::string &target) {
     auto normalize = [](const std::string &s) {
         std::string result = s;
         result.erase(std::remove(result.begin(), result.end(), ' '), result.end());
@@ -85,8 +133,8 @@ llvm::Function *RuntimeSpecializer::find_function_by_demangled_name(const std::s
     return nullptr;
 }
 
-llvm::FunctionType *RuntimeSpecializer::create_specialized_function_type(llvm::Function *F,
-                                                                         const std::set<unsigned> &args_to_remove) {
+llvm::FunctionType *RuFuS::Impl::create_specialized_function_type(llvm::Function *F,
+                                                                  const std::set<unsigned> &args_to_remove) {
 
     std::vector<llvm::Type *> new_param_types;
     unsigned idx = 0;
@@ -100,7 +148,7 @@ llvm::FunctionType *RuntimeSpecializer::create_specialized_function_type(llvm::F
     return llvm::FunctionType::get(F->getReturnType(), new_param_types, F->isVarArg());
 }
 
-void RuntimeSpecializer::replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal) {
+void RuFuS::Impl::replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal) {
 
     llvm::SmallVector<llvm::Instruction *, 16> to_remove;
 
@@ -125,8 +173,7 @@ void RuntimeSpecializer::replace_alloca_with_constant(llvm::AllocaInst *AI, llvm
     AI->eraseFromParent();
 }
 
-void RuntimeSpecializer::specialize_internal_variables(llvm::Function *F,
-                                                       const std::map<std::string, int> &const_vars) {
+void RuFuS::Impl::specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars) {
 
     if (const_vars.empty())
         return;
@@ -158,8 +205,8 @@ void RuntimeSpecializer::specialize_internal_variables(llvm::Function *F,
     }
 }
 
-llvm::Constant *RuntimeSpecializer::find_constant_by_debug_info(llvm::Function *F, const std::string &var_name,
-                                                                int new_value) {
+llvm::Constant *RuFuS::Impl::find_constant_by_debug_info(llvm::Function *F, const std::string &var_name,
+                                                         int new_value) {
     // Iterate through debug info to find where variable was declared
     for (llvm::BasicBlock &BB : *F) {
         for (llvm::Instruction &I : BB) {
@@ -181,8 +228,9 @@ llvm::Constant *RuntimeSpecializer::find_constant_by_debug_info(llvm::Function *
     return nullptr;
 }
 
-llvm::Function *RuntimeSpecializer::clone_and_specialize_arguments(
-    llvm::Function *F, const std::map<std::string, int> &const_function_args, const std::string &specialized_name) {
+llvm::Function *RuFuS::Impl::clone_and_specialize_arguments(llvm::Function *F,
+                                                            const std::map<std::string, int> &const_function_args,
+                                                            const std::string &specialized_name) {
 
     // Build argument specialization info
     std::set<unsigned> args_to_remove;
@@ -229,37 +277,43 @@ llvm::Function *RuntimeSpecializer::clone_and_specialize_arguments(
     return new_func;
 }
 
-RuntimeSpecializer::RuntimeSpecializer() {
-    initialize_target();
-    initialize_pass_managers();
+// Public interface
+RuFuS::RuFuS() : impl(std::make_unique<Impl>()) {
+    impl->initialize_target();
+    impl->initialize_pass_managers();
 }
 
-RuntimeSpecializer &RuntimeSpecializer::load_ir_file(const std::string &ir_file) {
-    M = llvm::parseIRFile(ir_file, Err, Ctx);
-    if (!M) {
+RuFuS::~RuFuS() = default;
+
+RuFuS::RuFuS(RuFuS &&) noexcept = default;
+
+RuFuS &RuFuS::operator=(RuFuS &&) noexcept = default;
+
+RuFuS &RuFuS::load_ir_file(const std::string &ir_file) {
+    impl->M = llvm::parseIRFile(ir_file, impl->Err, impl->Ctx);
+    if (!impl->M) {
         llvm::errs() << "Failed to load IR from: " << ir_file << "\n";
-        Err.print("load_ir_file", llvm::errs());
+        impl->Err.print("load_ir_file", llvm::errs());
     } else {
-        disable_optimizations();
+        impl->disable_optimizations();
     }
     return *this;
 }
 
-RuntimeSpecializer &RuntimeSpecializer::load_ir_string(const std::string &ir_source) {
+RuFuS &RuFuS::load_ir_string(const std::string &ir_source) {
     auto mem_buf = llvm::MemoryBuffer::getMemBuffer(ir_source);
-    M = llvm::parseIR(mem_buf->getMemBufferRef(), Err, Ctx);
-    if (!M) {
+    impl->M = llvm::parseIR(mem_buf->getMemBufferRef(), impl->Err, impl->Ctx);
+    if (!impl->M) {
         llvm::errs() << "Failed to load IR from string\n";
-        Err.print("load_ir_string", llvm::errs());
+        impl->Err.print("load_ir_string", llvm::errs());
     } else {
-        disable_optimizations();
+        impl->disable_optimizations();
     }
     return *this;
 }
 
-RuntimeSpecializer &RuntimeSpecializer::specialize_function(const std::string &demangled_name,
-                                                            const std::map<std::string, int> &const_args) {
-    llvm::Function *F = find_function_by_demangled_name(demangled_name);
+RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
+    llvm::Function *F = impl->find_function_by_demangled_name(demangled_name);
     if (!F) {
         llvm::errs() << "Function not found: " << demangled_name << "\n";
         return *this;
@@ -283,50 +337,50 @@ RuntimeSpecializer &RuntimeSpecializer::specialize_function(const std::string &d
         }
     }
 
-    const std::string specialized_name = create_specialized_name(demangled_name, const_args);
-    llvm::Function *specialized_func = clone_and_specialize_arguments(F, const_function_args, specialized_name);
+    const std::string specialized_name = impl->create_specialized_name(demangled_name, const_args);
+    llvm::Function *specialized_func = impl->clone_and_specialize_arguments(F, const_function_args, specialized_name);
 
-    specialize_internal_variables(specialized_func, const_internal_vars);
+    impl->specialize_internal_variables(specialized_func, const_internal_vars);
 
     // Enable native optimizations on the specialized function
     specialized_func->removeFnAttr(llvm::Attribute::OptimizeNone);
     specialized_func->removeFnAttr(llvm::Attribute::NoInline);
-    specialized_func->addFnAttr("target-cpu", CPU);
-    specialized_func->addFnAttr("target-features", Features.getString());
-    
+    specialized_func->addFnAttr("target-cpu", impl->CPU);
+    specialized_func->addFnAttr("target-features", impl->Features.getString());
+
     llvm::outs() << "Created: " << specialized_name << " (args: " << F->arg_size() << " -> "
                  << specialized_func->arg_size() << ")\n";
 
     return *this;
 }
 
-RuntimeSpecializer &RuntimeSpecializer::optimize() {
-    if (!M)
+RuFuS &RuFuS::optimize() {
+    if (!impl->M)
         return *this;
 
-    M->setTargetTriple(target_triple);
-    M->setDataLayout(TM->createDataLayout());
+    impl->M->setTargetTriple(impl->target_triple);
+    impl->M->setDataLayout(impl->TM->createDataLayout());
 
     llvm::ModulePassManager MPM =
-        llvm::PassBuilder(TM.get()).buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+        llvm::PassBuilder(impl->TM.get()).buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
 
-    MPM.run(*M, MAM);
+    MPM.run(*impl->M, impl->MAM);
     return *this;
 }
 
-RuntimeSpecializer &RuntimeSpecializer::print_module_ir() {
-    if (M)
-        M->print(llvm::outs(), nullptr);
+RuFuS &RuFuS::print_module_ir() {
+    if (impl->M)
+        impl->M->print(llvm::outs(), nullptr);
     return *this;
 }
 
-RuntimeSpecializer &RuntimeSpecializer::print_debug_info() {
-    if (!M) {
+RuFuS &RuFuS::print_debug_info() {
+    if (!impl->M) {
         llvm::errs() << "No module loaded\n";
         return *this;
     }
 
-    for (auto &F : M->functions()) {
+    for (auto &F : impl->M->functions()) {
         if (F.isDeclaration())
             continue;
 
@@ -347,30 +401,29 @@ RuntimeSpecializer &RuntimeSpecializer::print_debug_info() {
     return *this;
 }
 
-std::ptrdiff_t RuntimeSpecializer::compile(const std::string &demangled_name,
-                                           const std::map<std::string, int> &const_args) {
-    std::string specialized_name = create_specialized_name(demangled_name, const_args);
+std::ptrdiff_t RuFuS::compile(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
+    std::string specialized_name = impl->create_specialized_name(demangled_name, const_args);
 
-    if (!find_function_by_demangled_name(specialized_name)) {
+    if (!impl->find_function_by_demangled_name(specialized_name)) {
         specialize_function(demangled_name, const_args).optimize();
     }
 
     return compile(specialized_name);
 }
 
-std::ptrdiff_t RuntimeSpecializer::compile(const std::string &demangled_name) {
+std::ptrdiff_t RuFuS::compile(const std::string &demangled_name) {
     // Initialize JIT lazily
-    if (!JIT) {
+    if (!impl->JIT) {
         auto jit_or_err = llvm::orc::LLJITBuilder().create();
         if (!jit_or_err) {
             llvm::errs() << "Failed to create JIT\n";
             return 0;
         }
-        JIT = std::move(*jit_or_err);
+        impl->JIT = std::move(*jit_or_err);
     }
 
     // Find function
-    llvm::Function *F = find_function_by_demangled_name(demangled_name);
+    llvm::Function *F = impl->find_function_by_demangled_name(demangled_name);
     if (!F) {
         llvm::errs() << "Function not found: " << demangled_name << "\n";
         return 0;
@@ -379,8 +432,8 @@ std::ptrdiff_t RuntimeSpecializer::compile(const std::string &demangled_name) {
     // Clone function into new module
     auto new_ctx = std::make_unique<llvm::LLVMContext>();
     auto new_module = std::make_unique<llvm::Module>("jit_module", *new_ctx);
-    new_module->setTargetTriple(M->getTargetTriple());
-    new_module->setDataLayout(M->getDataLayout());
+    new_module->setTargetTriple(impl->M->getTargetTriple());
+    new_module->setDataLayout(impl->M->getDataLayout());
 
     llvm::ValueToValueMapTy VMap;
     llvm::Function *new_func =
@@ -401,13 +454,13 @@ std::ptrdiff_t RuntimeSpecializer::compile(const std::string &demangled_name) {
     std::string func_name = new_func->getName().str();
     auto TSM = llvm::orc::ThreadSafeModule(std::move(new_module), std::move(new_ctx));
 
-    if (auto err = JIT->addIRModule(std::move(TSM))) {
+    if (auto err = impl->JIT->addIRModule(std::move(TSM))) {
         llvm::errs() << "Failed to add module to JIT\n";
         return 0;
     }
 
     // Lookup symbol
-    auto sym_or_err = JIT->lookup(func_name);
+    auto sym_or_err = impl->JIT->lookup(func_name);
     if (!sym_or_err) {
         llvm::errs() << "Failed to lookup symbol: " << func_name << "\n";
         return 0;

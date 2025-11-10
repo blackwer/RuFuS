@@ -1,10 +1,11 @@
 #include <rufus.hpp>
 
+#include <array>
 #include <iostream>
 
 // Test helper
 template <int N>
-void test_jit(RuntimeSpecializer &RS) {
+void test_jit(RuFuS &RS) {
     using FuncType = void (*)(float *);
     FuncType hot_loop_jit = reinterpret_cast<FuncType>(RS.compile("hot_loop(float*,int)", {{"N", N}}));
 
@@ -22,7 +23,7 @@ void test_jit(RuntimeSpecializer &RS) {
 int main(int argc, char **argv) {
     std::string ir_file = argc > 1 ? argv[1] : "hot_loop.ll";
 
-    RuntimeSpecializer RS;
+    RuFuS RS;
 
     // Batch specialization (more efficient)
     RS.load_ir_file(ir_file)

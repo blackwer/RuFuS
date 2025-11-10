@@ -45,7 +45,7 @@ clang++ -S -O0 -fno-discard-value-names -emit-llvm hot_loop.cpp
     // desired function type after eating our arguments
     using FuncType = void (*)(float *);
     
-    RuntimeSpecializer RS;
+    RuFuS RS;
     auto hot_loop_N_64 = reinterpre_cast<FuncType>(
         RS.load_ir_file("hot_loop.ll")
           .specialize_function("hot_loop(float*,int)", {{"N", 64}})

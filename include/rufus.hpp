@@ -1,89 +1,38 @@
 #ifndef RUFUS_HPP
 #define RUFUS_HPP
 
-// LLVM Core
-#include <cstddef>
-#include <llvm/IR/LLVMContext.h>
-#include <llvm/IR/Module.h>
-#include <llvm/IRReader/IRReader.h>
+#include <map>
+#include <memory>
+#include <string>
 
-// LLVM Passes and Optimization
-#include <llvm/Passes/PassBuilder.h>
-#include <llvm/Transforms/Utils/Cloning.h>
-
-// LLVM Target and Code Generation
-#include <llvm/MC/TargetRegistry.h>
-#include <llvm/Target/TargetMachine.h>
-#include <llvm/TargetParser/Host.h>
-
-// LLVM JIT
-#include <llvm/ExecutionEngine/Orc/LLJIT.h>
-
-// LLVM Support
-#include <llvm/Demangle/Demangle.h>
-#include <llvm/Support/TargetSelect.h>
-#include <llvm/Support/raw_ostream.h>
-#include <llvm/IR/DebugInfoMetadata.h>
-
-class RuntimeSpecializer {
+class RuFuS {
   private:
-    llvm::LLVMContext Ctx;
-    llvm::SMDiagnostic Err;
-    std::unique_ptr<llvm::Module> M;
-    std::unique_ptr<llvm::orc::LLJIT> JIT;
-    std::unique_ptr<llvm::TargetMachine> TM;
-
-    // Analysis managers (initialized once in constructor)
-    llvm::LoopAnalysisManager LAM;
-    llvm::FunctionAnalysisManager FAM;
-    llvm::CGSCCAnalysisManager CGAM;
-    llvm::ModuleAnalysisManager MAM;
-
-    std::string target_triple;
-    std::string CPU;
-    llvm::SubtargetFeatures Features;
-
-    void initialize_target();
-
-    void initialize_pass_managers();
-
-    void disable_optimizations();
-
-    llvm::Function *find_function_by_demangled_name(const std::string &target);
-
-    llvm::Constant *find_constant_by_debug_info(llvm::Function *F, const std::string &var_name, int new_value);
-
-    llvm::FunctionType *create_specialized_function_type(llvm::Function *F, const std::set<unsigned> &args_to_remove);
-
-    std::string create_specialized_name(const std::string &demangled_name, const std::map<std::string, int> &const_args);
-
-    void replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal);
-
-    llvm::Function *clone_and_specialize_arguments(llvm::Function *F, const std::map<std::string, int> &const_args,
-                                                   const std::string &specialized_name);
-
-    void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
+    struct Impl;
+    std::unique_ptr<Impl> impl;
 
   public:
-    RuntimeSpecializer();
+    RuFuS();
+    ~RuFuS();
 
-    RuntimeSpecializer &load_ir_file(const std::string &ir_file);
+    // Move constructor/assignment (needed for unique_ptr)
+    RuFuS(RuFuS &&) noexcept;
+    RuFuS &operator=(RuFuS &&) noexcept;
 
-    RuntimeSpecializer &load_ir_string(const std::string &ir_source);
+    // Delete copy (or implement if needed)
+    RuFuS(const RuFuS &) = delete;
+    RuFuS &operator=(const RuFuS &) = delete;
 
-    RuntimeSpecializer &specialize_function(const std::string &demangled_name,
+    RuFuS &load_ir_file(const std::string &ir_file);
+    RuFuS &load_ir_string(const std::string &ir_source);
+    RuFuS &specialize_function(const std::string &demangled_name,
                                             const std::map<std::string, int> &const_args);
-
-    RuntimeSpecializer &optimize();
+    RuFuS &optimize();
 
     std::ptrdiff_t compile(const std::string &demangled_name, const std::map<std::string, int> &const_args);
-
     std::ptrdiff_t compile(const std::string &demangled_name);
 
-    RuntimeSpecializer &print_module_ir();
-
-    RuntimeSpecializer &print_debug_info();
+    RuFuS &print_module_ir();
+    RuFuS &print_debug_info();
 };
-
 
 #endif
