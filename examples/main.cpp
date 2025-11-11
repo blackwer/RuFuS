@@ -37,6 +37,9 @@ int main(int argc, char **argv) {
     RS.specialize_function("hot_loop(float*,int)", {{"N", 66}}).optimize();
     test_jit<66>(RS);
 
+    // Template functions require return type
+    RS.specialize_function("void hot_loop_template<float>(float*,int)", {{"N", 65}}).optimize();
+
     // Prints out things like available functions and their signatures
     RS.print_debug_info();
 
