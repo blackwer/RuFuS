@@ -1,4 +1,5 @@
 #include <rufus.hpp>
+#include "hot_loop_ir.h"
 
 #include <array>
 #include <iostream>
@@ -21,11 +22,10 @@ void test_jit(RuFuS &RS) {
 }
 
 int main(int argc, char **argv) {
-    std::string ir_file = argc > 1 ? argv[1] : "hot_loop.ll";
     RuFuS RS;
 
     // Batch specialization (more efficient)
-    RS.load_ir_file(ir_file)
+    RS.load_ir_string(rufus::embedded::hot_loop_ir)
         .specialize_function("hot_loop(float*,int)", {{"N", 64}})
         .specialize_function("hot_loop(float*,int)", {{"N", 65}})
         .specialize_function("hot_loop_const(float*)", {{"N", 64}})

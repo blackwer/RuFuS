@@ -9,6 +9,9 @@ find_package(LLVM REQUIRED CONFIG)
 option(LLVM_LINK_SHARED "Link against shared LLVM libraries" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries instead of static" OFF)
 
+find_package(Python3 REQUIRED)
+include(cmake/RuFuS.cmake)
+
 if (LLVM_LINK_SHARED)
   set(llvm_libs LLVM)
 else()
@@ -25,24 +28,6 @@ else()
   )
 endif()
 
-function(add_llvm_ir_target source_file)
-    get_filename_component(basename ${source_file} NAME_WE)
-    set(output_file ${CMAKE_CURRENT_BINARY_DIR}/${basename}.ll)
-    add_custom_command(
-        OUTPUT ${output_file}
-        COMMAND clang++ -S -emit-llvm -O0 -Xclang -disable-llvm-passes -fno-discard-value-names
-                ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
-                -o ${output_file}
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
-        COMMENT "Generating IR: ${basename}.ll"
-        VERBATIM
-    )
-    set(${basename}_IR ${output_file} PARENT_SCOPE)
-endfunction()
-
-add_llvm_ir_target(src/hot_loop.cpp)
-add_custom_target(generate_ir ALL DEPENDS ${hot_loop_IR})
-
 add_library(rufus src/rufus.cpp)
 target_include_directories(rufus PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -53,11 +38,7 @@ target_include_directories(rufus PRIVATE ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(rufus PRIVATE ${LLVM_DEFINITIONS})
 target_link_libraries(rufus PUBLIC ${llvm_libs})
 
-# Proof of concept executable
-add_executable(demo examples/main.cpp)
-target_include_directories(demo PRIVATE include)
-target_link_libraries(demo rufus)
-add_dependencies(demo generate_ir)
+add_subdirectory(examples)
 
 # Install and export
 install(TARGETS rufus
