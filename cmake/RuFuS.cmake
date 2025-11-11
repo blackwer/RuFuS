@@ -12,7 +12,7 @@ function(embed_ir_as_header target_name source_file)
     add_custom_command(
         OUTPUT ${IR_FILE}
         COMMAND ${CMAKE_CXX_COMPILER}
-            -S -emit-llvm -O0 -g
+            -S -emit-llvm -O0
             -fno-discard-value-names
             -Xclang -disable-llvm-passes
             ${SOURCE_ABS}
