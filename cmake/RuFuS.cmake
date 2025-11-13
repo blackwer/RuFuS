@@ -12,9 +12,14 @@ function(embed_ir_as_header target_name source_file)
     add_custom_command(
         OUTPUT ${IR_FILE}
         COMMAND ${CMAKE_CXX_COMPILER}
-            -S -emit-llvm -O0
+            -S -emit-llvm -Oz              # Optimize for size (minimal but effective)
+            -fno-vectorize                 # Your runtime pass handles this
+            -fno-slp-vectorize
+            -fno-unroll-loops              # Preserve loop structure
+            -fno-inline-functions          # Don't inline user functions
+            -finline-hint-functions        # But DO inline tiny stdlib helpers
             -fno-discard-value-names
-            -Xclang -disable-llvm-passes
+            -DNDEBUG
             ${SOURCE_ABS}
             -o ${IR_FILE}
         DEPENDS ${SOURCE_ABS}

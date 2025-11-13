@@ -32,6 +32,7 @@
 #include <llvm/Transforms/Scalar/LICM.h>
 #include <llvm/Transforms/Scalar/LoopRotation.h>
 #include <llvm/Transforms/Scalar/LoopUnrollPass.h>
+#include <llvm/Transforms/Scalar/SCCP.h>
 #include <llvm/Transforms/Scalar/SROA.h>
 #include <llvm/Transforms/Scalar/SimplifyCFG.h>
 #include <llvm/Transforms/Utils/Mem2Reg.h>
@@ -42,6 +43,7 @@
 #include <llvm/Transforms/Scalar/LoopPassManager.h>
 
 #include <algorithm>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -75,6 +77,9 @@ struct RuFuS::Impl {
     void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
     void optimize_function(llvm::Function *F);
     void disable_optimizations();
+    void strip_loop_metadata(llvm::Function *F);
+    void fix_function_attributes(llvm::Function *F);
+    std::map<llvm::Function *, bool> is_optimized;
 };
 
 std::string RuFuS::Impl::create_specialized_name(const std::string &demangled_name,
@@ -82,10 +87,19 @@ std::string RuFuS::Impl::create_specialized_name(const std::string &demangled_na
     size_t paren_pos = demangled_name.find('(');
     std::string basename = demangled_name.substr(0, paren_pos);
 
+    // Create hash of full signature for uniqueness
+    std::hash<std::string> hasher;
+    size_t sig_hash = hasher(demangled_name);
+
     std::ostringstream oss;
-    oss << basename << "_RFS";
+    oss << basename;
+
+    // Add const args
     for (const auto &[name, value] : const_args)
         oss << "_" << name << "_" << value;
+
+    // Add short hash for overload disambiguation
+    oss << "_" << std::hex << std::setw(8) << std::setfill('0') << (sig_hash & 0xFFFFFFFF);
 
     return oss.str();
 }
@@ -308,6 +322,60 @@ RuFuS &RuFuS::load_ir_string(const std::string &ir_source) {
     return *this;
 }
 
+void RuFuS::Impl::strip_loop_metadata(llvm::Function *F) {
+    for (llvm::BasicBlock &BB : *F) {
+        for (llvm::Instruction &I : BB) {
+            // Find loop backedge branches
+            if (auto *BI = llvm::dyn_cast<llvm::BranchInst>(&I)) {
+                llvm::MDNode *LoopMD = BI->getMetadata(llvm::LLVMContext::MD_loop);
+                if (!LoopMD)
+                    continue;
+
+                // Create new loop metadata without unroll-disable directives
+                llvm::SmallVector<llvm::Metadata *, 4> NewOps;
+
+                for (unsigned i = 0; i < LoopMD->getNumOperands(); ++i) {
+                    llvm::MDNode *Op = llvm::dyn_cast<llvm::MDNode>(LoopMD->getOperand(i));
+                    if (!Op)
+                        continue;
+
+                    // Skip unroll-disable metadata
+                    if (Op->getNumOperands() > 0) {
+                        if (auto *MDS = llvm::dyn_cast<llvm::MDString>(Op->getOperand(0))) {
+                            llvm::StringRef Name = MDS->getString();
+                            if (Name == "llvm.loop.unroll.disable" || Name == "llvm.loop.unroll.runtime.disable") {
+                                continue; // Skip this metadata
+                            }
+                        }
+                    }
+
+                    NewOps.push_back(Op);
+                }
+
+                // Create new loop metadata
+                if (!NewOps.empty()) {
+                    llvm::MDNode *NewLoopMD = llvm::MDNode::get(F->getContext(), NewOps);
+                    // Self-reference for loop identification
+                    NewLoopMD->replaceOperandWith(0, NewLoopMD);
+                    BI->setMetadata(llvm::LLVMContext::MD_loop, NewLoopMD);
+                } else {
+                    // Remove loop metadata entirely
+                    BI->setMetadata(llvm::LLVMContext::MD_loop, nullptr);
+                }
+            }
+        }
+    }
+}
+
+void RuFuS::Impl::fix_function_attributes(llvm::Function *F) {
+    F->removeFnAttr(llvm::Attribute::OptimizeNone);
+    F->removeFnAttr(llvm::Attribute::NoInline);
+    F->removeFnAttr(llvm::Attribute::MinSize);
+    F->removeFnAttr(llvm::Attribute::OptimizeForSize);
+    F->addFnAttr("target-cpu", CPU);
+    F->addFnAttr("target-features", Features.getString());
+}
+
 RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
     llvm::Function *F = impl->find_function_by_demangled_name(demangled_name);
     if (!F) {
@@ -337,12 +405,8 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
     llvm::Function *specialized_func = impl->clone_and_specialize_arguments(F, const_function_args, specialized_name);
 
     impl->specialize_internal_variables(specialized_func, const_internal_vars);
-
-    // Enable native optimizations on the specialized function
-    specialized_func->removeFnAttr(llvm::Attribute::OptimizeNone);
-    specialized_func->removeFnAttr(llvm::Attribute::NoInline);
-    specialized_func->addFnAttr("target-cpu", impl->CPU);
-    specialized_func->addFnAttr("target-features", impl->Features.getString());
+    impl->strip_loop_metadata(specialized_func);
+    impl->fix_function_attributes(specialized_func);
 
     llvm::outs() << "Created: " << specialized_name << " (args: " << F->arg_size() << " -> "
                  << specialized_func->arg_size() << ")\n";
@@ -368,6 +432,7 @@ void RuFuS::Impl::optimize_function(llvm::Function *F) {
 
     // Add the key optimization passes in the right order
     FPM.addPass(llvm::PromotePass());
+
     FPM.addPass(llvm::InstCombinePass());
     FPM.addPass(llvm::SimplifyCFGPass());
     FPM.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
@@ -389,12 +454,16 @@ void RuFuS::Impl::optimize_function(llvm::Function *F) {
     // Loop unrolling
     FPM.addPass(llvm::LoopUnrollPass());
 
+    // Propagate constants
+    FPM.addPass(llvm::SCCPPass());
+
     // Cleanup
     FPM.addPass(llvm::InstCombinePass());
     FPM.addPass(llvm::SimplifyCFGPass());
     FPM.addPass(llvm::DCEPass());
 
     FPM.run(*F, FAM);
+    is_optimized[F] = true;
 }
 
 RuFuS &RuFuS::optimize() {
@@ -402,7 +471,7 @@ RuFuS &RuFuS::optimize() {
         return *this;
 
     for (llvm::Function &F : *impl->M) {
-        if (!F.isDeclaration() && !F.hasFnAttribute(llvm::Attribute::OptimizeNone)) {
+        if (!F.isDeclaration() && !F.hasFnAttribute(llvm::Attribute::OptimizeNone) && !impl->is_optimized[&F]) {
             impl->optimize_function(&F);
         }
     }
@@ -462,22 +531,67 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
             return 0;
         }
         impl->JIT = std::move(*jit_or_err);
+
+        // NEW: Add support for C standard library symbols
+        auto &ES = impl->JIT->getExecutionSession();
+        auto &MainJD = impl->JIT->getMainJITDylib();
+
+        auto DLSG = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+            impl->JIT->getDataLayout().getGlobalPrefix());
+
+        if (!DLSG) {
+            llvm::errs() << "Failed to create dynamic library search generator\n";
+            return 0;
+        }
+
+        MainJD.addGenerator(std::move(*DLSG));
     }
 
-    // Find function
     llvm::Function *F = impl->find_function_by_demangled_name(demangled_name);
     if (!F) {
         llvm::errs() << "Function not found: " << demangled_name << "\n";
         return 0;
     }
 
-    // Clone function into new module
+    // Create new module and context
     auto new_ctx = std::make_unique<llvm::LLVMContext>();
     auto new_module = std::make_unique<llvm::Module>("jit_module", *new_ctx);
     new_module->setTargetTriple(impl->M->getTargetTriple());
     new_module->setDataLayout(impl->M->getDataLayout());
 
+    // Use CloneFunctionAndRelatedGlobals or similar helper
     llvm::ValueToValueMapTy VMap;
+
+    // Clone all globals that might be referenced
+    for (llvm::GlobalVariable &GV : impl->M->globals()) {
+        llvm::GlobalVariable *NewGV =
+            new llvm::GlobalVariable(*new_module, GV.getValueType(), GV.isConstant(), GV.getLinkage(),
+                                     nullptr, // Will set initializer after all globals are mapped
+                                     GV.getName(), nullptr, GV.getThreadLocalMode(), GV.getType()->getAddressSpace());
+
+        NewGV->copyAttributesFrom(&GV);
+        VMap[&GV] = NewGV;
+    }
+
+    // Now set initializers with proper mapping
+    for (llvm::GlobalVariable &GV : impl->M->globals()) {
+        if (GV.hasInitializer()) {
+            llvm::GlobalVariable *NewGV = llvm::cast<llvm::GlobalVariable>(VMap[&GV]);
+            NewGV->setInitializer(llvm::MapValue(GV.getInitializer(), VMap));
+        }
+    }
+
+    // Clone external function declarations
+    for (llvm::Function &Fn : impl->M->functions()) {
+        if (Fn.isDeclaration()) {
+            llvm::Function *NewFn =
+                llvm::Function::Create(Fn.getFunctionType(), Fn.getLinkage(), Fn.getName(), new_module.get());
+            NewFn->copyAttributesFrom(&Fn);
+            VMap[&Fn] = NewFn;
+        }
+    }
+
+    // Now clone the target function
     llvm::Function *new_func =
         llvm::Function::Create(F->getFunctionType(), F->getLinkage(), F->getName(), new_module.get());
     new_func->copyAttributesFrom(F);
@@ -497,7 +611,9 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
     auto TSM = llvm::orc::ThreadSafeModule(std::move(new_module), std::move(new_ctx));
 
     if (auto err = impl->JIT->addIRModule(std::move(TSM))) {
-        llvm::errs() << "Failed to add module to JIT\n";
+        llvm::handleAllErrors(std::move(err), [](const llvm::ErrorInfoBase &EI) {
+            llvm::errs() << "Failed to add module to JIT: " << EI.message() << "\n";
+        });
         return 0;
     }
 

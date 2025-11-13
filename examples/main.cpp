@@ -1,8 +1,9 @@
-#include <rufus.hpp>
 #include "hot_loop_ir.h"
+#include <rufus.hpp>
 
 #include <array>
 #include <iostream>
+#include <vector>
 
 // Test helper
 template <int N>
@@ -39,6 +40,16 @@ int main(int argc, char **argv) {
 
     // Template functions require return type
     RS.specialize_function("void hot_loop_template<float>(float*,int)", {{"N", 65}}).optimize();
+    RS.specialize_function("hot_loop(std::vector<float,std::allocator<float>>&)", {{"N", 64}}).optimize();
+    auto test_func =
+        RS.compile<void (*)(std::vector<float> &)>("hot_loop(std::vector<float,std::allocator<float>>&)", {{"N", 64}});
+
+    std::vector<float> vec(64, 1.0f);
+    test_func(vec);
+    if (vec[0] != 2.0f || vec[64 - 1] != 2.0f)
+        std::cerr << "Test (std::vector) failed for N=" << 64 << "\n";
+    else
+        std::cout << "Test (std::vector) passed for N=" << 64 << "\n";
 
     // Prints out things like available functions and their signatures
     RS.print_debug_info();
