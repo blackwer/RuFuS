@@ -51,7 +51,6 @@ endif()
 
 # Examples
 if (RUFUS_BUILD_EXAMPLES)
-  find_package(Python3 REQUIRED)
   include(cmake/RuFuS.cmake)
   add_subdirectory(examples)
 endif()

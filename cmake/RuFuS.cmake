@@ -1,13 +1,9 @@
 set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR})
 
 function(embed_ir_as_header target_name source_file)
-    # Use absolute paths
-    get_filename_component(SOURCE_ABS ${source_file} ABSOLUTE 
-        BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-    
     set(IR_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}.ll)
     set(HEADER_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}_ir.h)
-    
+
     # Step 1: Generate IR
     add_custom_command(
         OUTPUT ${IR_FILE}
@@ -20,33 +16,29 @@ function(embed_ir_as_header target_name source_file)
             -finline-hint-functions        # But DO inline tiny stdlib helpers
             -fno-discard-value-names
             -DNDEBUG
-            ${SOURCE_ABS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
             -o ${IR_FILE}
-        DEPENDS ${SOURCE_ABS}
-        COMMENT "Generating IR for ${source_file}"
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        DEPENDS ${source_file}
+        VERBATIM
     )
-    
+
     # Step 2: Convert to header (use RUFUS_CMAKE_DIR)
     add_custom_command(
         OUTPUT ${HEADER_FILE}
-        COMMAND ${Python3_EXECUTABLE} 
-            ${RUFUS_CMAKE_DIR}/ir_to_header.py
-            ${IR_FILE}
-            ${HEADER_FILE}
-            ${target_name}_ir
-        DEPENDS ${IR_FILE} ${RUFUS_CMAKE_DIR}/ir_to_header.py
-        COMMENT "Embedding IR as header"
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMAND ${CMAKE_COMMAND}
+            -DIR_FILE=${IR_FILE}
+            -DHEADER_FILE=${HEADER_FILE}
+            -DVAR_NAME=${target_name}_ir
+            -P ${RUFUS_CMAKE_DIR}/embed_ir.cmake
+        DEPENDS ${IR_FILE}
+        VERBATIM
     )
-    
-    # Step 3: Create interface library (header-only)
+
+    # Custom target to tie it together
     add_library(${target_name}_ir INTERFACE)
+
+    set_source_files_properties(${HEADER_FILE} PROPERTIES GENERATED TRUE)
     target_sources(${target_name}_ir INTERFACE ${HEADER_FILE})
-    target_include_directories(${target_name}_ir INTERFACE 
+    target_include_directories(${target_name}_ir INTERFACE
         ${CMAKE_CURRENT_BINARY_DIR})
-    
-    # Make sure header is generated
-    add_custom_target(${target_name}_ir_generate DEPENDS ${HEADER_FILE})
-    add_dependencies(${target_name}_ir ${target_name}_ir_generate)
 endfunction()
