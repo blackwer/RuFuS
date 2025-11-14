@@ -4,6 +4,8 @@ project(RuFuS LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cmake CACHE INTERNAL "")
+
 option(BUILD_SHARED_LIBS "Build shared libraries instead of static" OFF)
 option(RUFUS_LINK_LLVM_SHARED "Link against shared LLVM libraries" OFF)
 option(RUFUS_BUILD_EXAMPLES "Build RuFuS examples" ON)
@@ -49,6 +51,9 @@ else()
   )
 endif()
 
+# Include custom CMake functions
+include(cmake/RuFuS.cmake)
+
 # Examples
 if (RUFUS_BUILD_EXAMPLES)
   include(cmake/RuFuS.cmake)
@@ -66,15 +71,6 @@ target_include_directories(rufus PRIVATE ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(rufus PRIVATE ${LLVM_DEFINITIONS})
 target_link_libraries(rufus PUBLIC ${llvm_libs})
 
-# Install and export
-install(TARGETS rufus
-  EXPORT RuFuSTargets
-  LIBRARY DESTINATION lib
-  ARCHIVE DESTINATION lib
-)
-
-install(EXPORT RuFuSTargets
-  FILE RuFuSTargets.cmake
-  NAMESPACE RuFuS::
-  DESTINATION lib/cmake/RuFuS
-)
+# NEW: Add alias and export cmake dir
+add_library(RuFuS::rufus ALIAS rufus)
+set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cmake CACHE INTERNAL "")

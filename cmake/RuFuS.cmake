@@ -1,4 +1,6 @@
-set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR})
+if(NOT DEFINED RUFUS_CMAKE_DIR)
+    set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR} CACHE INTERNAL "")
+endif()
 
 function(embed_ir_as_header target_name source_file)
     set(IR_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}.ll)
