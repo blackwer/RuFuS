@@ -75,6 +75,8 @@ struct RuFuS::Impl {
     llvm::Function *clone_and_specialize_arguments(llvm::Function *F, const std::map<std::string, int> &const_args,
                                                    const std::string &specialized_name);
     void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
+    void inline_all_calls(llvm::Function *F, std::set<llvm::Function *> &visited);
+    void inline_all_calls(llvm::Function *F);
     void optimize_function(llvm::Function *F);
     void disable_optimizations();
     void strip_loop_metadata(llvm::Function *F);
@@ -383,6 +385,8 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
         return *this;
     }
 
+    impl->inline_all_calls(F);
+
     // Separate const_args into arguments vs internal variables
     std::map<std::string, int> const_function_args;
     std::map<std::string, int> const_internal_vars;
@@ -412,6 +416,49 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
                  << specialized_func->arg_size() << ")\n";
 
     return *this;
+}
+
+void RuFuS::Impl::inline_all_calls(llvm::Function *F, std::set<llvm::Function *> &visited) {
+    if (visited.count(F))
+        return;
+    visited.insert(F);
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        llvm::SmallVector<llvm::CallInst *, 16> calls_to_inline;
+
+        // Collect all call sites to defined functions
+        for (llvm::BasicBlock &BB : *F) {
+            for (llvm::Instruction &I : BB) {
+                if (auto *CI = llvm::dyn_cast<llvm::CallInst>(&I)) {
+                    llvm::Function *Callee = CI->getCalledFunction();
+
+                    // Only inline if:
+                    // 1. Callee exists and is defined (not just declared)
+                    // 2. Callee is in our module
+                    // 3. Callee is not an intrinsic
+                    if (Callee && !Callee->isDeclaration() && !Callee->isIntrinsic()) {
+                        calls_to_inline.push_back(CI);
+                    }
+                }
+            }
+        }
+
+        // Inline each call
+        for (llvm::CallInst *CI : calls_to_inline) {
+            llvm::InlineFunctionInfo IFI;
+            llvm::InlineResult result = llvm::InlineFunction(*CI, IFI);
+            if (result.isSuccess()) {
+                changed = true;
+                llvm::outs() << "Inlined: " << CI->getCalledFunction()->getName() << "\n";
+            }
+        }
+    }
+}
+void RuFuS::Impl::inline_all_calls(llvm::Function *F) {
+    std::set<llvm::Function *> visited;
+    inline_all_calls(F, visited);
 }
 
 void RuFuS::Impl::optimize_function(llvm::Function *F) {

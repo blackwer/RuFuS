@@ -30,5 +30,7 @@ void hot_loop_template(T *arr, int N) {
     }
 }
 
+void hot_loop_inlining(float *arr, int N) { hot_loop(arr, N); }
+
 template void hot_loop_template<float>(float *arr, int N);
 template void hot_loop_template<double>(double *arr, int N);
