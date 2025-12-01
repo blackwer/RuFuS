@@ -1,7 +1,6 @@
 #ifndef RUFUS_HPP
 #define RUFUS_HPP
 
-#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>

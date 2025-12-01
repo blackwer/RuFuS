@@ -75,7 +75,6 @@ struct RuFuS::Impl {
     llvm::Function *clone_and_specialize_arguments(llvm::Function *F, const std::map<std::string, int> &const_args,
                                                    const std::string &specialized_name);
     void specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars);
-    void inline_all_calls(llvm::Function *F, std::set<llvm::Function *> &visited);
     void inline_all_calls(llvm::Function *F);
     void optimize_function(llvm::Function *F);
     void disable_optimizations();
@@ -418,10 +417,8 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
     return *this;
 }
 
-void RuFuS::Impl::inline_all_calls(llvm::Function *F, std::set<llvm::Function *> &visited) {
-    if (visited.count(F))
-        return;
-    visited.insert(F);
+void RuFuS::Impl::inline_all_calls(llvm::Function *F) {
+    llvm::outs() << "Inlining calls in function: " << F->getName() << "\n";
 
     bool changed = true;
     while (changed) {
@@ -439,6 +436,7 @@ void RuFuS::Impl::inline_all_calls(llvm::Function *F, std::set<llvm::Function *>
                     // 2. Callee is in our module
                     // 3. Callee is not an intrinsic
                     if (Callee && !Callee->isDeclaration() && !Callee->isIntrinsic()) {
+                        llvm::outs() << "Found call to inline: " << Callee->getName() << "\n";
                         calls_to_inline.push_back(CI);
                     }
                 }
@@ -448,17 +446,14 @@ void RuFuS::Impl::inline_all_calls(llvm::Function *F, std::set<llvm::Function *>
         // Inline each call
         for (llvm::CallInst *CI : calls_to_inline) {
             llvm::InlineFunctionInfo IFI;
+            auto name = CI->getCalledFunction()->getName();
             llvm::InlineResult result = llvm::InlineFunction(*CI, IFI);
             if (result.isSuccess()) {
                 changed = true;
-                llvm::outs() << "Inlined: " << CI->getCalledFunction()->getName() << "\n";
+                llvm::outs() << "Inlined call to: " << name << "\n";
             }
         }
     }
-}
-void RuFuS::Impl::inline_all_calls(llvm::Function *F) {
-    std::set<llvm::Function *> visited;
-    inline_all_calls(F, visited);
 }
 
 void RuFuS::Impl::optimize_function(llvm::Function *F) {

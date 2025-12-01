@@ -53,6 +53,13 @@ int main(int argc, char **argv) {
         test_jit(RS, "void hot_loop_template<float>(float*,int)", N);
     }
 
+    RS.specialize_function("evaluate_all_pairs_inv_r2_struct(float*,float*,float*,int,int)",
+                           {{"Nsrc", 64}, {"Ntrg", 64}})
+        .optimize();
+    RS.specialize_function("evaluate_all_pairs_inv_r2_lambda(float*,float*,float*,int,int)",
+                           {{"Nsrc", 64}, {"Ntrg", 64}})
+        .optimize();
+
     // C++ types are a bit more annoying due to the need to fully specify the types
     // ...so we do them separately
     std_vector_example(RS, 64);
