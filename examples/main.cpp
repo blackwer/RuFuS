@@ -64,6 +64,16 @@ int main(int argc, char **argv) {
     // ...so we do them separately
     std_vector_example(RS, 64);
 
+    std::vector<float> coeffs{
+        1.340418974956820e-03,  -6.599369969180820e-03, 1.490307518448090e-02, -2.093949273676980e-02,
+        2.107881727833481e-02,  -1.675447756809429e-02, 1.153573427436465e-02, -7.167326866171437e-03,
+        3.494340256858195e-03,  -1.811569682012156e-03, 2.526431600085065e-03, -1.709903001756345e-03,
+        -7.760281837689070e-04, 6.225228333113239e-04,  7.224764067524717e-04, -4.656557370053271e-04};
+
+    RS.specialize_function("evaluate_all_pairs_laplace_polynomial(float*,float*,float*,int,int,float*,int)",
+                           {{"Nsrc", 64}, {"Ntrg", 64}, {"n_coefs", coeffs.size()}})
+        .optimize();
+
     // Prints out things like available functions and their signatures
     RS.print_debug_info();
 

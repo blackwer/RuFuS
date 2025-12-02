@@ -6,10 +6,21 @@ function(embed_ir_as_header target_name source_file)
     set(IR_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}.ll)
     set(HEADER_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}_ir.h)
 
+    set(CXX_STD ${CMAKE_CXX_STANDARD})
+    if(NOT CXX_STD)
+        set(CXX_STD 17)
+    endif()
+    set(COMPILE_FLAGS -std=c++${CXX_STD})
+
+    # Add project include directories
+    foreach(dir ${CMAKE_INCLUDE_PATH})
+        list(APPEND COMPILE_FLAGS -I${dir})
+    endforeach()
+
     # Step 1: Generate IR
     add_custom_command(
         OUTPUT ${IR_FILE}
-        COMMAND ${CMAKE_CXX_COMPILER}
+        COMMAND ${CMAKE_CXX_COMPILER} ${COMPILE_FLAGS}
             -S -emit-llvm -O0
             -fno-discard-value-names
             -DNDEBUG
