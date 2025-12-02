@@ -3,6 +3,12 @@ if(NOT DEFINED RUFUS_CMAKE_DIR)
 endif()
 
 function(embed_ir_as_header target_name source_file)
+    # Parse additional arguments for include directories
+    set(options "")
+    set(oneValueArgs "")
+    set(multiValueArgs INCLUDES DEFINITIONS)
+    cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
     set(IR_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}.ll)
     set(HEADER_FILE ${CMAKE_CURRENT_BINARY_DIR}/${target_name}_ir.h)
 
@@ -12,12 +18,19 @@ function(embed_ir_as_header target_name source_file)
     endif()
     set(COMPILE_FLAGS -std=c++${CXX_STD})
 
-    # Add project include directories
+    foreach(dir ${ARG_INCLUDES})
+        list(APPEND COMPILE_FLAGS -I${dir})
+    endforeach()
+
+    foreach(def ${ARG_DEFINITIONS})
+        list(APPEND COMPILE_FLAGS -D${def})
+    endforeach()
+
     foreach(dir ${CMAKE_INCLUDE_PATH})
         list(APPEND COMPILE_FLAGS -I${dir})
     endforeach()
 
-    # Step 1: Generate IR
+    # Generate IR
     add_custom_command(
         OUTPUT ${IR_FILE}
         COMMAND ${CMAKE_CXX_COMPILER} ${COMPILE_FLAGS}
@@ -30,7 +43,7 @@ function(embed_ir_as_header target_name source_file)
         VERBATIM
     )
 
-    # Step 2: Convert to header (use RUFUS_CMAKE_DIR)
+    # Convert to header
     add_custom_command(
         OUTPUT ${HEADER_FILE}
         COMMAND ${CMAKE_COMMAND}
@@ -42,11 +55,10 @@ function(embed_ir_as_header target_name source_file)
         VERBATIM
     )
 
-    # Custom target to tie it together
-    add_library(${target_name}_ir INTERFACE)
+    add_library(${target_name} INTERFACE)
 
     set_source_files_properties(${HEADER_FILE} PROPERTIES GENERATED TRUE)
-    target_sources(${target_name}_ir INTERFACE ${HEADER_FILE})
-    target_include_directories(${target_name}_ir INTERFACE
+    target_sources(${target_name} INTERFACE ${HEADER_FILE})
+    target_include_directories(${target_name} INTERFACE
         ${CMAKE_CURRENT_BINARY_DIR})
 endfunction()
