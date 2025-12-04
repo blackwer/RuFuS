@@ -3,6 +3,7 @@
 // LLVM Core
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/IRReader/IRReader.h>
 
 // LLVM Passes and Optimization
@@ -78,9 +79,12 @@ struct RuFuS::Impl {
     void inline_all_calls(llvm::Function *F);
     void optimize_function(llvm::Function *F);
     void disable_optimizations();
+    void optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM);
     void strip_loop_metadata(llvm::Function *F);
     void fix_function_attributes(llvm::Function *F);
     std::map<llvm::Function *, bool> is_optimized;
+
+    unsigned MaxVectorWidth = 128;
 };
 
 std::string RuFuS::Impl::create_specialized_name(const std::string &demangled_name,
@@ -125,6 +129,27 @@ void RuFuS::Impl::initialize_target() {
     if (target) {
         TM.reset(
             target->createTargetMachine(target_triple, CPU, Features.getString(), llvm::TargetOptions(), std::nullopt));
+        if (TM) {
+            // Query TTI for the actual register width
+            // This works for x86, ARM, RISC-V, etc.
+            auto TTI = TM.get()->getTargetIRAnalysis();
+
+            // Get the actual hardware vector register width
+            MaxVectorWidth = 128; // Safe default
+
+            // Try to get it from target machine features
+            llvm::StringRef Features = TM.get()->getTargetFeatureString();
+            if (Features.contains("avx512"))
+                MaxVectorWidth = 512;
+            else if (Features.contains("avx"))
+                MaxVectorWidth = 256;
+            else if (Features.contains("neon"))
+                MaxVectorWidth = 128;
+            else if (Features.contains("sve"))
+                MaxVectorWidth = 2048; // ARM SVE
+        } else {
+            MaxVectorWidth = 128;
+        }
     }
 }
 
@@ -430,13 +455,7 @@ void RuFuS::Impl::inline_all_calls(llvm::Function *F) {
             for (llvm::Instruction &I : BB) {
                 if (auto *CI = llvm::dyn_cast<llvm::CallInst>(&I)) {
                     llvm::Function *Callee = CI->getCalledFunction();
-
-                    // Only inline if:
-                    // 1. Callee exists and is defined (not just declared)
-                    // 2. Callee is in our module
-                    // 3. Callee is not an intrinsic
                     if (Callee && !Callee->isDeclaration() && !Callee->isIntrinsic()) {
-                        llvm::outs() << "Found call to inline: " << Callee->getName() << "\n";
                         calls_to_inline.push_back(CI);
                     }
                 }
@@ -450,7 +469,6 @@ void RuFuS::Impl::inline_all_calls(llvm::Function *F) {
             llvm::InlineResult result = llvm::InlineFunction(*CI, IFI);
             if (result.isSuccess()) {
                 changed = true;
-                llvm::outs() << "Inlined call to: " << name << "\n";
             }
         }
     }
@@ -558,10 +576,50 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name, const std::map<
     std::string specialized_name = impl->create_specialized_name(demangled_name, const_args);
 
     if (!impl->find_function_by_demangled_name(specialized_name)) {
-        specialize_function(demangled_name, const_args).optimize();
+        specialize_function(demangled_name, const_args) // .optimize()
+            ;
     }
 
     return compile(specialized_name);
+}
+
+void RuFuS::Impl::optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM) {
+    for (auto &F : M->functions()) {
+        if (!F.isDeclaration()) {
+            F.removeFnAttr(llvm::Attribute::OptimizeNone);
+            F.addFnAttr("no-trapping-math", "false");
+            F.removeFnAttr("noinline");
+            F.removeFnAttr("frame-pointer");
+            F.removeFnAttr("min-legal-vector-width");
+            F.addFnAttr("min-legal-vector-width", std::to_string(MaxVectorWidth));
+            F.addFnAttr("prefer-vector-width", std::to_string(MaxVectorWidth));
+            F.removeFnAttr("stack-protector-buffer-size");
+            F.addFnAttr("no-infs-fp-math", "true");
+            F.addFnAttr("no-nans-fp-math", "true");         
+            F.addFnAttr("no-signed-zeros-fp-math", "true");
+            F.addFnAttr("unsafe-fp-math", "true");
+        }
+    }
+
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    llvm::PassBuilder PB(TM);
+
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::ModulePassManager MPM;
+
+    // Run O3 pipeline to normalize the IR
+    MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+
+    MPM.run(*M, MAM);
 }
 
 std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
@@ -595,76 +653,59 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         return 0;
     }
 
-    // Create new module and context
+    // Serialize the function and its dependencies to a string
+    std::string module_str;
+    llvm::raw_string_ostream OS(module_str);
+    impl->M->print(OS, nullptr);
+    OS.flush();
+
+    // Parse into a new context
     auto new_ctx = std::make_unique<llvm::LLVMContext>();
-    auto new_module = std::make_unique<llvm::Module>("jit_module", *new_ctx);
-    new_module->setTargetTriple(impl->M->getTargetTriple());
-    new_module->setDataLayout(impl->M->getDataLayout());
+    llvm::SMDiagnostic Err;
+    auto new_module = llvm::parseIR(llvm::MemoryBufferRef(module_str, "module"), Err, *new_ctx);
 
-    // Use CloneFunctionAndRelatedGlobals or similar helper
-    llvm::ValueToValueMapTy VMap;
-
-    // Clone all globals that might be referenced
-    for (llvm::GlobalVariable &GV : impl->M->globals()) {
-        llvm::GlobalVariable *NewGV =
-            new llvm::GlobalVariable(*new_module, GV.getValueType(), GV.isConstant(), GV.getLinkage(),
-                                     nullptr, // Will set initializer after all globals are mapped
-                                     GV.getName(), nullptr, GV.getThreadLocalMode(), GV.getType()->getAddressSpace());
-
-        NewGV->copyAttributesFrom(&GV);
-        VMap[&GV] = NewGV;
+    if (!new_module) {
+        llvm::errs() << "Failed to parse module: ";
+        Err.print("rufus", llvm::errs());
+        return 0;
     }
 
-    // Now set initializers with proper mapping
-    for (llvm::GlobalVariable &GV : impl->M->globals()) {
-        if (GV.hasInitializer()) {
-            llvm::GlobalVariable *NewGV = llvm::cast<llvm::GlobalVariable>(VMap[&GV]);
-            NewGV->setInitializer(llvm::MapValue(GV.getInitializer(), VMap));
-        }
+    // Find the function in the new module
+    llvm::Function *new_func = new_module->getFunction(F->getName());
+    if (!new_func) {
+        llvm::errs() << "Function not found in cloned module\n";
+        return 0;
     }
 
-    // Clone external function declarations
-    for (llvm::Function &Fn : impl->M->functions()) {
-        if (Fn.isDeclaration()) {
-            llvm::Function *NewFn =
-                llvm::Function::Create(Fn.getFunctionType(), Fn.getLinkage(), Fn.getName(), new_module.get());
-            NewFn->copyAttributesFrom(&Fn);
-            VMap[&Fn] = NewFn;
-        }
+    // Verify
+    if (llvm::verifyModule(*new_module, &llvm::errs())) {
+        llvm::errs() << "Module verification failed\n";
+        return 0;
     }
+    llvm::outs() << "Module verified successfully\n";
 
-    // Now clone the target function
-    llvm::Function *new_func =
-        llvm::Function::Create(F->getFunctionType(), F->getLinkage(), F->getName(), new_module.get());
-    new_func->copyAttributesFrom(F);
+    // Optimize whole module
+    impl->optimize_for_jit(new_module.get(), impl->TM.get());
+    llvm::outs() << "Module optimized for JIT successfully\n";
 
-    auto new_arg_it = new_func->arg_begin();
-    for (auto &arg : F->args()) {
-        new_arg_it->setName(arg.getName());
-        VMap[&arg] = &(*new_arg_it);
-        ++new_arg_it;
-    }
-
-    llvm::SmallVector<llvm::ReturnInst *, 8> returns;
-    llvm::CloneFunctionInto(new_func, F, VMap, llvm::CloneFunctionChangeType::LocalChangesOnly, returns);
-
-    // Add to JIT
-    std::string func_name = new_func->getName().str();
+    // Create ThreadSafeModule with new context
     auto TSM = llvm::orc::ThreadSafeModule(std::move(new_module), std::move(new_ctx));
 
     if (auto err = impl->JIT->addIRModule(std::move(TSM))) {
-        llvm::handleAllErrors(std::move(err), [](const llvm::ErrorInfoBase &EI) {
-            llvm::errs() << "Failed to add module to JIT: " << EI.message() << "\n";
-        });
+        llvm::errs() << "JIT Error: " << llvm::toString(std::move(err)) << "\n";
         return 0;
     }
+    llvm::outs() << "Module added to TSM successfully\n";
 
-    // Lookup symbol
-    auto sym_or_err = impl->JIT->lookup(func_name);
+    auto sym_or_err = impl->JIT->lookup(new_func->getName());
     if (!sym_or_err) {
-        llvm::errs() << "Failed to lookup symbol: " << func_name << "\n";
+        llvm::errs() << "Lookup failed - compilation error occurred here\n";
+        auto err = sym_or_err.takeError();
+        llvm::handleAllErrors(
+            std::move(err), [](const llvm::ErrorInfoBase &EI) { llvm::errs() << "  Error: " << EI.message() << "\n"; });
         return 0;
     }
+    llvm::outs() << "Function looked up successfully\n";
 
     return sym_or_err->getValue();
 }
