@@ -164,8 +164,12 @@ void RuFuS::Impl::initialize_pass_managers() {
 
 void RuFuS::Impl::disable_optimizations() {
     for (auto &F : M->functions()) {
-        if (!F.isDeclaration())
+        if (!F.isDeclaration()) {
             F.addFnAttr(llvm::Attribute::OptimizeNone);
+            F.removeFnAttr("min-legal-vector-width");
+            F.addFnAttr("min-legal-vector-width", std::to_string(MaxVectorWidth));
+            F.addFnAttr("prefer-vector-width", std::to_string(MaxVectorWidth));
+        }
     }
 }
 
@@ -595,7 +599,7 @@ void RuFuS::Impl::optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM) {
             F.addFnAttr("prefer-vector-width", std::to_string(MaxVectorWidth));
             F.removeFnAttr("stack-protector-buffer-size");
             F.addFnAttr("no-infs-fp-math", "true");
-            F.addFnAttr("no-nans-fp-math", "true");         
+            F.addFnAttr("no-nans-fp-math", "true");
             F.addFnAttr("no-signed-zeros-fp-math", "true");
             F.addFnAttr("unsafe-fp-math", "true");
         }
@@ -646,11 +650,20 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
 
         MainJD.addGenerator(std::move(*DLSG));
     }
+    auto &JD = impl->JIT->getMainJITDylib();
+    auto &ES = impl->JIT->getExecutionSession();
 
-    llvm::Function *F = impl->find_function_by_demangled_name(demangled_name);
-    if (!F) {
+    llvm::Function *target_func = impl->find_function_by_demangled_name(demangled_name);
+    if (!target_func) {
         llvm::errs() << "Function not found: " << demangled_name << "\n";
         return 0;
+    }
+
+    {
+        auto sym_or_err = impl->JIT->lookup(target_func->getName());
+        if (sym_or_err)
+            return sym_or_err->getValue();
+        llvm::consumeError(sym_or_err.takeError());
     }
 
     // Serialize the function and its dependencies to a string
@@ -670,8 +683,30 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         return 0;
     }
 
+    for (auto &F : *new_module) {
+        if (F.isDeclaration())
+            continue;
+        if (&F == target_func)
+            continue;
+
+        // Check if in JIT
+        auto Sym = ES.lookup({&JD}, ES.intern(F.getName()));
+        if (Sym) {
+            // Already compiled - make it a declaration
+            if (F.hasComdat()) {
+                F.setComdat(nullptr);
+            }
+            F.deleteBody();
+            llvm::outs() << "Linked to existing: " << F.getName() << "\n";
+        } else {
+            // Not in JIT yet - keep the body, it will be compiled
+            llvm::consumeError(Sym.takeError());
+            llvm::outs() << "Will compile: " << F.getName() << "\n";
+        }
+    }
+
     // Find the function in the new module
-    llvm::Function *new_func = new_module->getFunction(F->getName());
+    llvm::Function *new_func = new_module->getFunction(target_func->getName());
     if (!new_func) {
         llvm::errs() << "Function not found in cloned module\n";
         return 0;
