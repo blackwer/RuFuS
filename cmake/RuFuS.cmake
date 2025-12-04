@@ -33,8 +33,8 @@ function(embed_ir_as_header target_name source_file)
     # Generate IR
     add_custom_command(
         OUTPUT ${IR_FILE}
-        COMMAND ${CMAKE_CXX_COMPILER} ${COMPILE_FLAGS}
-            -S -emit-llvm -O0 -march=native
+        COMMAND ${RUFUS_CLANG_EXECUTABLE} ${COMPILE_FLAGS}
+            -S -emit-llvm -O0 -g -march=native
             -fno-discard-value-names
             -DNDEBUG
             ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}

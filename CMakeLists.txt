@@ -35,6 +35,22 @@ endif()
 find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 
+# Find the Clang that matches this LLVM installation
+find_program(LLVM_CLANG_EXECUTABLE
+    NAMES clang++-${LLVM_VERSION_MAJOR} clang++
+    HINTS ${LLVM_TOOLS_BINARY_DIR}
+    DOC "Clang compiler for generating IR"
+)
+
+if(NOT LLVM_CLANG_EXECUTABLE)
+    message(FATAL_ERROR "Could not find clang++ matching LLVM ${LLVM_PACKAGE_VERSION}")
+endif()
+
+message(STATUS "Using Clang: ${LLVM_CLANG_EXECUTABLE}")
+
+# Make it available the IR builder
+set(RUFUS_CLANG_EXECUTABLE ${LLVM_CLANG_EXECUTABLE} CACHE INTERNAL "")
+
 if (LLVM_LINK_SHARED)
   set(llvm_libs LLVM)
 else()
@@ -69,7 +85,7 @@ target_include_directories(rufus PUBLIC
 
 target_include_directories(rufus PRIVATE ${LLVM_INCLUDE_DIRS})
 target_compile_definitions(rufus PRIVATE ${LLVM_DEFINITIONS})
-target_link_libraries(rufus PUBLIC ${llvm_libs})
+target_link_libraries(rufus PRIVATE ${llvm_libs})
 
 # NEW: Add alias and export cmake dir
 add_library(RuFuS::rufus ALIAS rufus)
