@@ -87,6 +87,7 @@ struct RuFuS::Impl {
     void optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM);
     void strip_loop_metadata(llvm::Function *F);
     void fix_function_attributes(llvm::Function *F);
+    void mark_lambdas_for_inlining(llvm::Function *F);
     std::map<llvm::Function *, bool> is_optimized;
 
     unsigned MaxVectorWidth = 128;
@@ -498,6 +499,7 @@ void RuFuS::Impl::optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM) {
             F.addFnAttr("no-nans-fp-math", "true");
             F.addFnAttr("no-signed-zeros-fp-math", "true");
             F.addFnAttr("unsafe-fp-math", "true");
+            mark_lambdas_for_inlining(&F);
         }
     }
 
@@ -558,6 +560,32 @@ RuFuS &RuFuS::load_ir_string(const std::string &ir_source) {
         impl->disable_optimizations();
     }
     return *this;
+}
+
+void RuFuS::Impl::mark_lambdas_for_inlining(llvm::Function *F) {
+    for (auto &BB : *F) {
+        for (auto &I : BB) {
+            if (auto *CI = llvm::dyn_cast<llvm::CallInst>(&I)) {
+                llvm::Function *Callee = CI->getCalledFunction();
+                if (!Callee || Callee->isDeclaration())
+                    continue;
+
+                // Heuristic: if the function takes a byval parameter (common for lambdas)
+                // or is small, mark it for aggressive inlining
+                bool is_lambda = false;
+                for (auto &Arg : Callee->args()) {
+                    if (Arg.hasByValAttr()) {
+                        is_lambda = true;
+                        break;
+                    }
+                }
+
+                if (is_lambda || Callee->size() < 10) { // small function
+                    Callee->addFnAttr(llvm::Attribute::AlwaysInline);
+                }
+            }
+        }
+    }
 }
 
 RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
