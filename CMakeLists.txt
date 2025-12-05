@@ -51,7 +51,7 @@ message(STATUS "Using Clang: ${LLVM_CLANG_EXECUTABLE}")
 # Make it available the IR builder
 set(RUFUS_CLANG_EXECUTABLE ${LLVM_CLANG_EXECUTABLE} CACHE INTERNAL "")
 
-if (LLVM_LINK_SHARED)
+if (RUFUS_LINK_LLVM_SHARED)
   set(llvm_libs LLVM)
 else()
   llvm_map_components_to_libnames(llvm_libs
