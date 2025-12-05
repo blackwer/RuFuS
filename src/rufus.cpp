@@ -18,6 +18,8 @@
 
 // LLVM Support
 #include <llvm/Demangle/Demangle.h>
+#include <llvm/ExecutionEngine/JITEventListener.h>
+#include <llvm/ExecutionEngine/Orc/DebugUtils.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
@@ -88,9 +90,12 @@ struct RuFuS::Impl {
     std::map<llvm::Function *, bool> is_optimized;
 
     unsigned MaxVectorWidth = 128;
+    bool first_compile = true;
+
+    llvm::raw_ostream &debug_out;
 };
 
-RuFuS::Impl::Impl() {
+RuFuS::Impl::Impl() : debug_out(getenv("RUFUS_DEBUG") ? llvm::outs() : llvm::nulls()) {
     initialize_target();
     initialize_pass_managers();
     initialize_jit();
@@ -179,18 +184,12 @@ void RuFuS::Impl::initialize_jit() {
     }
     JIT = std::move(*jit_or_err);
 
-    // NEW: Add support for C standard library symbols
+    // Add C stdlib symbols
     auto &ES = JIT->getExecutionSession();
     auto &MainJD = JIT->getMainJITDylib();
-
     auto DLSG = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(JIT->getDataLayout().getGlobalPrefix());
-
-    if (!DLSG) {
-        llvm::errs() << "Failed to create dynamic library search generator\n";
-        return;
-    }
-
-    MainJD.addGenerator(std::move(*DLSG));
+    if (DLSG)
+        MainJD.addGenerator(std::move(*DLSG));
 }
 
 void RuFuS::Impl::disable_optimizations() {
@@ -347,7 +346,7 @@ llvm::Function *RuFuS::Impl::clone_and_specialize_arguments(llvm::Function *F,
 }
 
 void RuFuS::Impl::inline_all_calls(llvm::Function *F) {
-    llvm::outs() << "Inlining calls in function: " << F->getName() << "\n";
+    debug_out << "Inlining calls in function: " << F->getName() << "\n";
 
     bool changed = true;
     while (changed) {
@@ -439,85 +438,6 @@ void RuFuS::Impl::fix_function_attributes(llvm::Function *F) {
     F->addFnAttr("target-features", Features.getString());
 }
 
-void RuFuS::Impl::optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM) {
-    for (auto &F : M->functions()) {
-        if (!F.isDeclaration()) {
-            F.removeFnAttr(llvm::Attribute::OptimizeNone);
-            F.addFnAttr("no-trapping-math", "false");
-            F.removeFnAttr("noinline");
-            F.removeFnAttr("frame-pointer");
-            F.removeFnAttr("min-legal-vector-width");
-            F.addFnAttr("min-legal-vector-width", std::to_string(MaxVectorWidth));
-            F.addFnAttr("prefer-vector-width", std::to_string(MaxVectorWidth));
-            F.removeFnAttr("stack-protector-buffer-size");
-            F.addFnAttr("no-infs-fp-math", "true");
-            F.addFnAttr("no-nans-fp-math", "true");
-            F.addFnAttr("no-signed-zeros-fp-math", "true");
-            F.addFnAttr("unsafe-fp-math", "true");
-        }
-    }
-
-    llvm::LoopAnalysisManager LAM;
-    llvm::FunctionAnalysisManager FAM;
-    llvm::CGSCCAnalysisManager CGAM;
-    llvm::ModuleAnalysisManager MAM;
-
-    llvm::PassBuilder PB(TM);
-
-    PB.registerModuleAnalyses(MAM);
-    PB.registerCGSCCAnalyses(CGAM);
-    PB.registerFunctionAnalyses(FAM);
-    PB.registerLoopAnalyses(LAM);
-    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-
-    llvm::ModulePassManager MPM;
-
-    // Run O3 pipeline to normalize the IR
-    MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
-
-    MPM.run(*M, MAM);
-}
-
-// ************************************************************************************** \\
-//  ____  _   _ ____  _     ___ ____   ___ _   _ _____ _____ ____  _____ _    ____ _____  \\
-// |  _ \| | | | __ )| |   |_ _/ ___| |_ _| \ | |_   _| ____|  _ \|  ___/ \  / ___| ____| \\
-// | |_) | | | |  _ \| |    | | |      | ||  \| | | | |  _| | |_) | |_ / _ \| |   |  _|   \\
-// |  __/| |_| | |_) | |___ | | |___   | || |\  | | | | |___|  _ <|  _/ ___ \ |___| |___  \\
-// |_|    \___/|____/|_____|___\____| |___|_| \_| |_| |_____|_| \_\_|/_/   \_\____|_____| \\
-//                                                                                        \\
-// ************************************************************************************** \\
-
-RuFuS::RuFuS() : impl(std::make_unique<Impl>()) {}
-
-RuFuS::~RuFuS() = default;
-
-RuFuS::RuFuS(RuFuS &&) noexcept = default;
-
-RuFuS &RuFuS::operator=(RuFuS &&) noexcept = default;
-
-RuFuS &RuFuS::load_ir_file(const std::string &ir_file) {
-    impl->M = llvm::parseIRFile(ir_file, impl->Err, impl->Ctx);
-    if (!impl->M) {
-        llvm::errs() << "Failed to load IR from: " << ir_file << "\n";
-        impl->Err.print("load_ir_file", llvm::errs());
-    } else {
-        impl->disable_optimizations();
-    }
-    return *this;
-}
-
-RuFuS &RuFuS::load_ir_string(const std::string &ir_source) {
-    auto mem_buf = llvm::MemoryBuffer::getMemBuffer(ir_source);
-    impl->M = llvm::parseIR(mem_buf->getMemBufferRef(), impl->Err, impl->Ctx);
-    if (!impl->M) {
-        llvm::errs() << "Failed to load IR from string\n";
-        impl->Err.print("load_ir_string", llvm::errs());
-    } else {
-        impl->disable_optimizations();
-    }
-    return *this;
-}
-
 void RuFuS::Impl::strip_loop_metadata(llvm::Function *F) {
     for (llvm::BasicBlock &BB : *F) {
         for (llvm::Instruction &I : BB) {
@@ -563,14 +483,89 @@ void RuFuS::Impl::strip_loop_metadata(llvm::Function *F) {
     }
 }
 
+void RuFuS::Impl::optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM) {
+    for (auto &F : M->functions()) {
+        if (!F.isDeclaration()) {
+            F.removeFnAttr(llvm::Attribute::OptimizeNone);
+            F.addFnAttr("no-trapping-math", "false");
+            F.removeFnAttr(llvm::Attribute::NoInline);
+            F.removeFnAttr("frame-pointer");
+            F.removeFnAttr("min-legal-vector-width");
+            F.addFnAttr("min-legal-vector-width", std::to_string(MaxVectorWidth));
+            F.addFnAttr("prefer-vector-width", std::to_string(MaxVectorWidth));
+            F.removeFnAttr("stack-protector-buffer-size");
+            F.addFnAttr("no-infs-fp-math", "true");
+            F.addFnAttr("no-nans-fp-math", "true");
+            F.addFnAttr("no-signed-zeros-fp-math", "true");
+            F.addFnAttr("unsafe-fp-math", "true");
+        }
+    }
+
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    llvm::PassBuilder PB(TM);
+
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    // Run O3 pipeline to normalize the IR
+    llvm::ModulePassManager MPM = PB.buildThinLTOPreLinkDefaultPipeline(llvm::OptimizationLevel::O3);
+
+    MPM.run(*M, MAM);
+}
+
+// ************************************************************************************** \\
+//  ____  _   _ ____  _     ___ ____   ___ _   _ _____ _____ ____  _____ _    ____ _____  \\
+// |  _ \| | | | __ )| |   |_ _/ ___| |_ _| \ | |_   _| ____|  _ \|  ___/ \  / ___| ____| \\
+// | |_) | | | |  _ \| |    | | |      | ||  \| | | | |  _| | |_) | |_ / _ \| |   |  _|   \\
+// |  __/| |_| | |_) | |___ | | |___   | || |\  | | | | |___|  _ <|  _/ ___ \ |___| |___  \\
+// |_|    \___/|____/|_____|___\____| |___|_| \_| |_| |_____|_| \_\_|/_/   \_\____|_____| \\
+//                                                                                        \\
+// ************************************************************************************** \\
+
+RuFuS::RuFuS() : impl(std::make_unique<Impl>()) {}
+
+RuFuS::~RuFuS() = default;
+
+RuFuS::RuFuS(RuFuS &&) noexcept = default;
+
+RuFuS &RuFuS::operator=(RuFuS &&) noexcept = default;
+
+RuFuS &RuFuS::load_ir_file(const std::string &ir_file) {
+    impl->M = llvm::parseIRFile(ir_file, impl->Err, impl->Ctx);
+    if (!impl->M) {
+        llvm::errs() << "Failed to load IR from: " << ir_file << "\n";
+        impl->Err.print("load_ir_file", llvm::errs());
+    } else {
+        impl->disable_optimizations();
+    }
+    return *this;
+}
+
+RuFuS &RuFuS::load_ir_string(const std::string &ir_source) {
+    auto mem_buf = llvm::MemoryBuffer::getMemBuffer(ir_source);
+    impl->M = llvm::parseIR(mem_buf->getMemBufferRef(), impl->Err, impl->Ctx);
+    if (!impl->M) {
+        llvm::errs() << "Failed to load IR from string\n";
+        impl->Err.print("load_ir_string", llvm::errs());
+    } else {
+        impl->disable_optimizations();
+    }
+    return *this;
+}
+
 RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::map<std::string, int> &const_args) {
     llvm::Function *F = impl->find_function_by_demangled_name(demangled_name);
     if (!F) {
         llvm::errs() << "Function not found: " << demangled_name << "\n";
         return *this;
     }
-
-    impl->inline_all_calls(F);
 
     // Separate const_args into arguments vs internal variables
     std::map<std::string, int> const_function_args;
@@ -594,11 +589,12 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
     llvm::Function *specialized_func = impl->clone_and_specialize_arguments(F, const_function_args, specialized_name);
 
     impl->specialize_internal_variables(specialized_func, const_internal_vars);
+    // impl->inline_all_calls(specialized_func);
     impl->strip_loop_metadata(specialized_func);
     impl->fix_function_attributes(specialized_func);
 
-    llvm::outs() << "Created: " << specialized_name << " (args: " << F->arg_size() << " -> "
-                 << specialized_func->arg_size() << ")\n";
+    impl->debug_out << "Created: " << specialized_name << " (args: " << F->arg_size() << " -> "
+                    << specialized_func->arg_size() << ")\n";
 
     return *this;
 }
@@ -618,7 +614,7 @@ RuFuS &RuFuS::optimize() {
 
 RuFuS &RuFuS::print_module_ir() {
     if (impl->M)
-        impl->M->print(llvm::outs(), nullptr);
+        impl->M->print(impl->debug_out, nullptr);
     return *this;
 }
 
@@ -632,18 +628,18 @@ RuFuS &RuFuS::print_debug_info() {
         if (F.isDeclaration())
             continue;
 
-        llvm::outs() << "\nFunction: " << llvm::demangle(F.getName().str()) << "\n";
-        llvm::outs() << "  Mangled: " << F.getName() << "\n";
-        llvm::outs() << "  Args: ";
+        impl->debug_out << "\nFunction: " << llvm::demangle(F.getName().str()) << "\n";
+        impl->debug_out << "  Mangled: " << F.getName() << "\n";
+        impl->debug_out << "  Args: ";
 
         bool first = true;
         for (auto &arg : F.args()) {
             if (!first)
-                llvm::outs() << ", ";
-            llvm::outs() << arg.getName();
+                impl->debug_out << ", ";
+            impl->debug_out << arg.getName();
             first = false;
         }
-        llvm::outs() << "\n";
+        impl->debug_out << "\n";
     }
 
     return *this;
@@ -693,6 +689,16 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         return 0;
     }
 
+    // Hack to avoid issues with the duplicate $.module.__inits
+    if (!impl->first_compile) {
+        if (auto *GV = new_module->getNamedGlobal("llvm.global_ctors"))
+            GV->eraseFromParent();
+        if (auto *GV = new_module->getNamedGlobal("llvm.global_dtors"))
+            GV->eraseFromParent();
+    } else
+        impl->first_compile = false;
+
+    impl->optimize_for_jit(new_module.get(), impl->TM.get());
     for (auto &F : *new_module) {
         if (F.isDeclaration())
             continue;
@@ -707,11 +713,11 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
                 F.setComdat(nullptr);
             }
             F.deleteBody();
-            llvm::outs() << "Linked to existing: " << F.getName() << "\n";
+            impl->debug_out << "Linked to existing: " << F.getName() << "\n";
         } else {
             // Not in JIT yet - keep the body, it will be compiled
             llvm::consumeError(Sym.takeError());
-            llvm::outs() << "Will compile: " << F.getName() << "\n";
+            impl->debug_out << "Will compile: " << F.getName() << "\n";
         }
     }
 
@@ -727,11 +733,10 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         llvm::errs() << "Module verification failed\n";
         return 0;
     }
-    llvm::outs() << "Module verified successfully\n";
+    impl->debug_out << "Module verified successfully\n";
 
     // Optimize whole module
-    impl->optimize_for_jit(new_module.get(), impl->TM.get());
-    llvm::outs() << "Module optimized for JIT successfully\n";
+    impl->debug_out << "Module optimized for JIT successfully\n";
 
     // Create ThreadSafeModule with new context
     auto TSM = llvm::orc::ThreadSafeModule(std::move(new_module), std::move(new_ctx));
@@ -740,7 +745,7 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         llvm::errs() << "JIT Error: " << llvm::toString(std::move(err)) << "\n";
         return 0;
     }
-    llvm::outs() << "Module added to TSM successfully\n";
+    impl->debug_out << "Module added to TSM successfully\n";
 
     auto sym_or_err = impl->JIT->lookup(new_func->getName());
     if (!sym_or_err) {
@@ -750,7 +755,7 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
             std::move(err), [](const llvm::ErrorInfoBase &EI) { llvm::errs() << "  Error: " << EI.message() << "\n"; });
         return 0;
     }
-    llvm::outs() << "Function looked up successfully\n";
+    impl->debug_out << "Function looked up successfully\n";
 
     return sym_or_err->getValue();
 }
