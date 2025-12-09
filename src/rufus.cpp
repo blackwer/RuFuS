@@ -19,7 +19,6 @@
 // LLVM Support
 #include <llvm/Demangle/Demangle.h>
 #include <llvm/ExecutionEngine/JITEventListener.h>
-#include <llvm/ExecutionEngine/Orc/DebugUtils.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Transforms/Utils/Cloning.h>
 
@@ -44,6 +43,10 @@
 
 // Pass Adaptors
 #include <llvm/Transforms/Scalar/LoopPassManager.h>
+
+// Perf support
+#include <llvm/ExecutionEngine/Orc/Debugging/PerfSupportPlugin.h>
+#include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderPerf.h>
 
 #include <algorithm>
 #include <iomanip>
@@ -179,14 +182,44 @@ void RuFuS::Impl::initialize_pass_managers() {
 
 void RuFuS::Impl::initialize_jit() {
     auto jit_or_err = llvm::orc::LLJITBuilder().create();
+
     if (!jit_or_err) {
         llvm::errs() << "Failed to create JIT\n";
         return;
     }
     JIT = std::move(*jit_or_err);
+    auto &ES = JIT->getExecutionSession();
+
+    // Add perf support
+    if (getenv("RUFUS_PERF")) {
+        auto &ObjLayer = llvm::cast<llvm::orc::ObjectLinkingLayer>(JIT->getObjLinkingLayer());
+
+        // Register perf runtime functions
+        llvm::orc::SymbolMap perf_symbols;
+        auto start_addr = llvm::orc::ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderPerfStart);
+        auto end_addr = llvm::orc::ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderPerfEnd);
+        auto impl_addr = llvm::orc::ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderPerfImpl);
+
+        perf_symbols[ES.intern(JIT->mangle("llvm_orc_registerJITLoaderPerfStart"))] = {
+            start_addr, llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        perf_symbols[ES.intern(JIT->mangle("llvm_orc_registerJITLoaderPerfEnd"))] = {
+            end_addr, llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        perf_symbols[ES.intern(JIT->mangle("llvm_orc_registerJITLoaderPerfImpl"))] = {
+            impl_addr, llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        llvm::cantFail(JIT->getMainJITDylib().define(llvm::orc::absoluteSymbols(perf_symbols)));
+
+        // Add perf plugin
+        ObjLayer.addPlugin(std::make_unique<llvm::orc::PerfSupportPlugin>(ES.getExecutorProcessControl(), start_addr,
+                                                                          end_addr, impl_addr,
+                                                                          false, // EmitDebugInfo
+                                                                          false  // EmitUnwindInfo
+                                                                          ));
+
+        llvm::outs() << "Perf support enabled\n";
+    }
 
     // Add C stdlib symbols
-    auto &ES = JIT->getExecutionSession();
     auto &MainJD = JIT->getMainJITDylib();
     auto DLSG = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(JIT->getDataLayout().getGlobalPrefix());
     if (DLSG)
