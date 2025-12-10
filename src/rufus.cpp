@@ -726,12 +726,10 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         return 0;
     }
 
-    {
-        auto sym_or_err = impl->JIT->lookup(target_func->getName());
-        if (sym_or_err)
-            return sym_or_err->getValue();
-        llvm::consumeError(sym_or_err.takeError());
-    }
+    auto sym_or_err = impl->JIT->lookup(target_func->getName());
+    if (sym_or_err)
+        return sym_or_err->getValue();
+    llvm::consumeError(sym_or_err.takeError());
 
     // Serialize the function and its dependencies to a string
     std::string module_str;
@@ -808,7 +806,7 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
     }
     impl->debug_out << "Module added to TSM successfully\n";
 
-    auto sym_or_err = impl->JIT->lookup(new_func->getName());
+    sym_or_err = impl->JIT->lookup(new_func->getName());
     if (!sym_or_err) {
         llvm::errs() << "Lookup failed - compilation error occurred here\n";
         auto err = sym_or_err.takeError();
