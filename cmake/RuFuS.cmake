@@ -2,6 +2,36 @@ if(NOT DEFINED RUFUS_CMAKE_DIR)
     set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR} CACHE INTERNAL "")
 endif()
 
+include(CheckCXXSourceCompiles)
+
+set(CMAKE_REQUIRED_FLAGS "-march=native")
+
+check_cxx_source_compiles("
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512DQ__) && defined(__AVX512VL__)
+int main() { return 0; }
+#else
+#error No AVX-512
+#endif
+" HAS_AVX512_FULL)
+
+check_cxx_source_compiles("
+#ifdef __AVX2__
+int main() { return 0; }
+#else
+#error No AVX2
+#endif
+" HAS_AVX2)
+
+if(HAS_AVX512_FULL)
+  set(X86_64_LEVEL "x86-64-v4" CACHE STRING "Detected x86-64 level")
+elseif(HAS_AVX2)
+  set(X86_64_LEVEL "x86-64-v3" CACHE STRING "Detected x86-64 level")
+else()
+  set(X86_64_LEVEL "x86-64-v2" CACHE STRING "Detected x86-64 level")
+endif()
+
+unset(CMAKE_REQUIRED_FLAGS)
+
 function(embed_ir_as_header target_name source_file)
     # Parse additional arguments for include directories
     set(options "")
@@ -34,7 +64,7 @@ function(embed_ir_as_header target_name source_file)
     add_custom_command(
         OUTPUT ${IR_FILE}
         COMMAND ${RUFUS_CLANG_EXECUTABLE} ${COMPILE_FLAGS}
-            -S -emit-llvm -O0 -march=native
+            -S -emit-llvm -O0 -march=${X86_64_LEVEL}
             -fno-discard-value-names
             -DNDEBUG
             ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
