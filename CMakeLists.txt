@@ -8,6 +8,7 @@ set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cmake CACHE INTERNAL "")
 
 option(BUILD_SHARED_LIBS "Build shared libraries instead of static" OFF)
 option(RUFUS_LINK_LLVM_SHARED "Link against shared LLVM libraries" OFF)
+option(RUFUS_BUILD_TESTS "Build RuFuS tests" ON)
 option(RUFUS_BUILD_EXAMPLES "Build RuFuS examples" ON)
 
 # Reporting
@@ -70,9 +71,15 @@ endif()
 # Include custom CMake functions
 include(cmake/RuFuS.cmake)
 
+# Tests
+if (RUFUS_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
 # Examples
 if (RUFUS_BUILD_EXAMPLES)
-  include(cmake/RuFuS.cmake)
+  # add_executable(demo examples/main.cpp)  # A limitations exists in embed_ir_as_header, whereby we must create the executable within the same CMakeLists.txt as embed_ir_as_header
   add_subdirectory(examples)
 endif()
 
