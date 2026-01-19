@@ -9,7 +9,7 @@
 #include <vector>
 
 // Auto-generated IR
-#include "hot_loop_ir.h"
+#include "unit_test_utils_ir.h"
 
 // Test helper
 void test_jit(RuFuS& RS, const std::string& func_str, int N) {
@@ -28,25 +28,25 @@ void test_jit(RuFuS& RS, const std::string& func_str, int N) {
 
 void std_vector_example(RuFuS& RS, int N) {
   auto test_func =
-      RS.compile<void (*)(std::vector<float>&)>("hot_loop(std::vector<float,std::allocator<float>>&)", {{"N", N}});
+      RS.load_ir_string(rufus::embedded::unit_test_utils_ir)
+        .compile<void (*)(std::vector<float>&)>("hot_loop(std::vector<float,std::allocator<float>>&)", {{"N", N}});
 
   std::vector<float> vec(N, 1.0f);
   test_func(vec);
-  if (vec[0] != 2.0f || vec[N - 1] != 2.0f)
-    std::cerr << "Test (std::vector) failed for N=" << N << "\n";
-  else
-    std::cout << "Test (std::vector) passed for N=" << N << "\n";
+  EXPECT_FLOAT_EQ(vec[0], 2.0f) << "Test (std::vector) failed for N=" << N;
+  EXPECT_FLOAT_EQ(vec[N - 1], 2.0f) << "Test (std::vector) failed for N=" << N;
 }
 
 TEST(ExampleTest, Test) {
   EXPECT_TRUE(true) << "Basic test framework check failed";
+
 }
 
 TEST(RufusUnitTests, HotLoopSpecialization) {
   RuFuS RS;
 
   // Batch specialization
-  RS.load_ir_string(rufus::embedded::hot_loop_ir)
+  RS.load_ir_string(rufus::embedded::unit_test_utils_ir)
       .specialize_function("hot_loop(float*,int)", {{"N", 64}})
       .specialize_function("hot_loop_const(float*)", {{"N", 64}})
       .specialize_function("hot_loop_inlining(float*,int)", {{"N", 64}})
@@ -62,11 +62,36 @@ TEST(RufusUnitTests, HotLoopSpecialization) {
   }
 }
 
+TEST(RufusUnitTests, MultipleRuFuSInstances) {
+  RuFuS RS1;
+  RuFuS RS2;
+
+  // Batch specialization
+  RS1.load_ir_string(rufus::embedded::unit_test_utils_ir)
+      .specialize_function("hot_loop(float*,int)", {{"N", 64}})
+      .specialize_function("hot_loop_const(float*)", {{"N", 64}})
+      .optimize();
+  RS2.load_ir_string(rufus::embedded::unit_test_utils_ir)
+      .specialize_function("hot_loop_inlining(float*,int)", {{"N", 64}})
+      .optimize();
+
+  for (auto& N : {64, 65}) {
+    test_jit(RS1, "hot_loop(float*,int)", N);
+    test_jit(RS1, "hot_loop_const(float*)", N);
+    test_jit(RS2, "hot_loop_inlining(float*,int)", N);
+
+    // Template functions require return type
+    test_jit(RS1, "void hot_loop_template<float>(float*,int)", N);
+  }
+}
+
 TEST(RufusUnitTests, EvalAllPairs) {
   RuFuS RS;
-  RS.specialize_function("evaluate_all_pairs_inv_r2_struct(float*,float*,float*,int,int)", {{"Nsrc", 64}, {"Ntrg", 64}})
+  RS.load_ir_string(rufus::embedded::unit_test_utils_ir)
+    .specialize_function("evaluate_all_pairs_inv_r2_struct(float*,float*,float*,int,int)", {{"Nsrc", 64}, {"Ntrg", 64}})
       .optimize();
-  RS.specialize_function("evaluate_all_pairs_inv_r2_lambda(float*,float*,float*,int,int)", {{"Nsrc", 64}, {"Ntrg", 64}})
+  RS.load_ir_string(rufus::embedded::unit_test_utils_ir)
+    .specialize_function("evaluate_all_pairs_inv_r2_lambda(float*,float*,float*,int,int)", {{"Nsrc", 64}, {"Ntrg", 64}})
       .optimize();
 
   std::vector<float> coeffs{

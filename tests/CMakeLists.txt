@@ -15,14 +15,14 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # Add the specific test modules here
-embed_ir_as_header(hot_loop hot_loop.cpp)
+embed_ir_as_header(unit_test_utils unit_test_utils.cpp)
 
 target_sources(${utest_ex_name} PRIVATE
    ${CMAKE_CURRENT_SOURCE_DIR}/hot_loop_tests.cpp
 )
 target_link_libraries(${utest_ex_name} PRIVATE 
     rufus
-    hot_loop
+    unit_test_utils
     GTest::gtest
     GTest::gtest_main
     GTest::gmock
