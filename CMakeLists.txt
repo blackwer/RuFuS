@@ -61,7 +61,7 @@ else()
     AggressiveInstCombine Vectorize IPO
     Target MC MCParser MCDisassembler
     X86CodeGen X86AsmParser X86Desc X86Info X86Disassembler
-    OrcJIT OrcShared OrcTargetProcess ExecutionEngine
+    OrcJIT OrcDebugging OrcShared OrcTargetProcess ExecutionEngine
     MCJIT RuntimeDyld JITLink
     Demangle BinaryFormat Remarks BitstreamReader
     TextAPI ProfileData

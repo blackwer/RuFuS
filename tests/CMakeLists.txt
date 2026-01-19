@@ -14,9 +14,15 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Link against gtest_main and rufus
+# Add the specific test modules here
+embed_ir_as_header(hot_loop hot_loop.cpp)
+
+target_sources(${utest_ex_name} PRIVATE
+   ${CMAKE_CURRENT_SOURCE_DIR}/hot_loop_tests.cpp
+)
 target_link_libraries(${utest_ex_name} PRIVATE 
     rufus
+    hot_loop
     GTest::gtest
     GTest::gtest_main
     GTest::gmock
@@ -26,14 +32,6 @@ target_include_directories(${utest_ex_name} PRIVATE
     ${PROJECT_SOURCE_DIR}/tests
     "${googletest_SOURCE_DIR}/googlemock/include"
     "${googletest_SOURCE_DIR}/googletest/include")
-
-# Add the specific test modules here
-embed_ir_as_header(hot_loop hot_loop.cpp)
-
-target_sources(${utest_ex_name} PRIVATE
-   ${CMAKE_CURRENT_SOURCE_DIR}/hot_loop_tests.cpp
-)
-target_link_libraries(${utest_ex_name} PRIVATE hot_loop)
 
 # Post processing: Let GTest parse the executable for tests and register them with CTest
 include(GoogleTest)            # CMake >= 3.10
