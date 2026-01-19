@@ -1,84 +1,82 @@
-#include "hot_loop_ir.h"
-#include <rufus.hpp>
-
 #include <array>
 #include <iostream>
+#include <rufus.hpp>
 #include <vector>
 
+#include "hot_loop_ir.h"
+
 // Test helper
-void test_jit(RuFuS &RS, const std::string &func_str, int N) {
-    using FuncType = void (*)(float *);
-    auto hot_loop_jit = RS.compile<FuncType>(func_str, {{"N", N}});
+void test_jit(RuFuS& RS, const std::string& func_str, int N) {
+  using FuncType = void (*)(float*);
+  auto hot_loop_jit = RS.compile<FuncType>(func_str, {{"N", N}});
 
-    constexpr int N_MAX = 1024;
-    alignas(64) std::array<float, N_MAX> testarr;
-    testarr.fill(1.0f);
+  constexpr int N_MAX = 1024;
+  alignas(64) std::array<float, N_MAX> testarr;
+  testarr.fill(1.0f);
 
-    hot_loop_jit(testarr.data());
+  hot_loop_jit(testarr.data());
 
-    if (testarr[0] != 2.0f || testarr[N - 1] != 2.0f)
-        std::cerr << "Test failed for N=" << N << "\n";
-    else
-        std::cout << "Test passed for N=" << N << "\n";
+  if (testarr[0] != 2.0f || testarr[N - 1] != 2.0f)
+    std::cerr << "Test failed for N=" << N << "\n";
+  else
+    std::cout << "Test passed for N=" << N << "\n";
 }
 
-void std_vector_example(RuFuS &RS, int N) {
-    auto test_func =
-        RS.compile<void (*)(std::vector<float> &)>("hot_loop(std::vector<float,std::allocator<float>>&)", {{"N", N}});
+void std_vector_example(RuFuS& RS, int N) {
+  auto test_func =
+      RS.compile<void (*)(std::vector<float>&)>("hot_loop(std::vector<float,std::allocator<float>>&)", {{"N", N}});
 
-    std::vector<float> vec(N, 1.0f);
-    test_func(vec);
-    if (vec[0] != 2.0f || vec[N - 1] != 2.0f)
-        std::cerr << "Test (std::vector) failed for N=" << N << "\n";
-    else
-        std::cout << "Test (std::vector) passed for N=" << N << "\n";
+  std::vector<float> vec(N, 1.0f);
+  test_func(vec);
+  if (vec[0] != 2.0f || vec[N - 1] != 2.0f)
+    std::cerr << "Test (std::vector) failed for N=" << N << "\n";
+  else
+    std::cout << "Test (std::vector) passed for N=" << N << "\n";
 }
 
-int main(int argc, char **argv) {
-    RuFuS RS;
+int main(int argc, char** argv) {
+  RuFuS RS;
 
-    // Batch specialization
-    RS.load_ir_string(rufus::embedded::hot_loop_ir)
-        .specialize_function("hot_loop(float*,int)", {{"N", 64}})
-        .specialize_function("hot_loop_const(float*)", {{"N", 64}})
-        .specialize_function("hot_loop_inlining(float*,int)", {{"N", 64}})
-        .optimize();
+  // Batch specialization
+  RS.load_ir_string(rufus::embedded::hot_loop_ir)
+      .specialize_function("hot_loop(float*,int)", {{"N", 64}})
+      .specialize_function("hot_loop_const(float*)", {{"N", 64}})
+      .specialize_function("hot_loop_inlining(float*,int)", {{"N", 64}})
+      .optimize();
 
-    for (auto &N : {64, 65}) {
-        test_jit(RS, "hot_loop(float*,int)", N);
-        test_jit(RS, "hot_loop_const(float*)", N);
-        test_jit(RS, "hot_loop_inlining(float*,int)", N);
+  for (auto& N : {64, 65}) {
+    test_jit(RS, "hot_loop(float*,int)", N);
+    test_jit(RS, "hot_loop_const(float*)", N);
+    test_jit(RS, "hot_loop_inlining(float*,int)", N);
 
-        // Template functions require return type
-        test_jit(RS, "void hot_loop_template<float>(float*,int)", N);
-    }
+    // Template functions require return type
+    test_jit(RS, "void hot_loop_template<float>(float*,int)", N);
+  }
 
-    RS.specialize_function("evaluate_all_pairs_inv_r2_struct(float*,float*,float*,int,int)",
-                           {{"Nsrc", 64}, {"Ntrg", 64}})
-        .optimize();
-    RS.specialize_function("evaluate_all_pairs_inv_r2_lambda(float*,float*,float*,int,int)",
-                           {{"Nsrc", 64}, {"Ntrg", 64}})
-        .optimize();
+  RS.specialize_function("evaluate_all_pairs_inv_r2_struct(float*,float*,float*,int,int)", {{"Nsrc", 64}, {"Ntrg", 64}})
+      .optimize();
+  RS.specialize_function("evaluate_all_pairs_inv_r2_lambda(float*,float*,float*,int,int)", {{"Nsrc", 64}, {"Ntrg", 64}})
+      .optimize();
 
-    // C++ types are a bit more annoying due to the need to fully specify the types
-    // ...so we do them separately
-    std_vector_example(RS, 64);
+  // C++ types are a bit more annoying due to the need to fully specify the types
+  // ...so we do them separately
+  std_vector_example(RS, 64);
 
-    std::vector<float> coeffs{
-        1.340418974956820e-03,  -6.599369969180820e-03, 1.490307518448090e-02, -2.093949273676980e-02,
-        2.107881727833481e-02,  -1.675447756809429e-02, 1.153573427436465e-02, -7.167326866171437e-03,
-        3.494340256858195e-03,  -1.811569682012156e-03, 2.526431600085065e-03, -1.709903001756345e-03,
-        -7.760281837689070e-04, 6.225228333113239e-04,  7.224764067524717e-04, -4.656557370053271e-04};
+  std::vector<float> coeffs{
+      1.340418974956820e-03,  -6.599369969180820e-03, 1.490307518448090e-02, -2.093949273676980e-02,
+      2.107881727833481e-02,  -1.675447756809429e-02, 1.153573427436465e-02, -7.167326866171437e-03,
+      3.494340256858195e-03,  -1.811569682012156e-03, 2.526431600085065e-03, -1.709903001756345e-03,
+      -7.760281837689070e-04, 6.225228333113239e-04,  7.224764067524717e-04, -4.656557370053271e-04};
 
-    RS.specialize_function("evaluate_all_pairs_laplace_polynomial(float*,float*,float*,int,int,float*,int)",
-                           {{"Nsrc", 64}, {"Ntrg", 64}, {"n_coefs", coeffs.size()}})
-        .optimize();
+  RS.specialize_function("evaluate_all_pairs_laplace_polynomial(float*,float*,float*,int,int,float*,int)",
+                         {{"Nsrc", 64}, {"Ntrg", 64}, {"n_coefs", coeffs.size()}})
+      .optimize();
 
-    // Prints out things like available functions and their signatures
-    RS.print_debug_info();
+  // Prints out things like available functions and their signatures
+  RS.print_debug_info();
 
-    // Optional: print final module IR
-    RS.print_module_ir();
+  // Optional: print final module IR
+  RS.print_module_ir();
 
-    return 0;
+  return 0;
 }
