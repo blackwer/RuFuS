@@ -1,6 +1,5 @@
 /// @brief Checks if a number is even or odd based on the check_even flag
-bool is_even_or_odd(int x) {
-  volatile bool check_even;
+bool is_even_or_odd(int x, bool check_even) {
   if (check_even) {
     return x % 2 == 0;
   } else {

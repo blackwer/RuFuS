@@ -61,6 +61,12 @@ TEST(RufusUnitTests, HotLoopSpecialization) {
   }
 }
 
+
+TEST(RufusUnitTests, EmptyOptimize) {
+  RuFuS RS;
+  RS.load_ir_string(rufus::embedded::hot_loop_test_utils_ir).optimize();
+}
+
 TEST(RufusUnitTests, MultipleRuFuSInstances) {
   RuFuS RS1;
   RuFuS RS2;

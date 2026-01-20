@@ -12,8 +12,7 @@
 #include "constexpr_test_utils_ir.h"
 
 void test_jit(bool check_even) {
-  // std::string func_str = check_even ? "bool is_even_or_odd<true>(int)" : "bool is_even_or_odd<false>(int)";
-  std::string func_str = check_even ? "is_even_or_odd(int)" : "is_even_or_odd(int)";
+  std::string func_str = "is_even_or_odd(int, bool)";
   using FuncType = bool (*)(int);
 
   RuFuS RS;
@@ -56,6 +55,7 @@ void test_constexpr_jit(bool check_even) {
   RS.load_ir_string(rufus::embedded::constexpr_test_utils_ir)
     .specialize_function(func_str, {{"check_even", check_even}})
     .optimize();
+
   auto is_even_or_odd = RS.compile<FuncType>(func_str, {{"check_even", check_even}});
   if (check_even) {
     EXPECT_TRUE(is_even_or_odd(4));
@@ -65,8 +65,6 @@ void test_constexpr_jit(bool check_even) {
     EXPECT_TRUE(is_even_or_odd(5));
   }
 }
-
-
 
 TEST(RufusConstexprUnitTests, IfSwitch) {
   test_jit(true);
