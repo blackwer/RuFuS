@@ -1,19 +1,35 @@
-/*
-Constexpr functions to be specialized by RuFuS
+/// @brief Checks if a number is even or odd based on the check_even flag
+bool is_even_or_odd(int x) {
+  volatile bool check_even;
+  if (check_even) {
+    return x % 2 == 0;
+  } else {
+    return x % 2 != 0;
+  }
+}
 
-The goal is to write a test like
+/// @brief Template version to check if a number is even or odd
+template<bool check_even>
+bool is_even_or_odd_template(int x) {
+  if (check_even) {
+    return x % 2 == 0;
+  } else {
+    return x % 2 != 0;
+  }
+}
+//
+template bool is_even_or_odd_template<true>(int x);
+template bool is_even_or_odd_template<false>(int x);
 
-RuFuS RS;
-RS.load_ir_string(rufus::embedded::constexpr_functions_ir)
-   .specialize_function("is_even_or_odd(int,bool)", {{"check_even", true}})"
-   .optimize();
-
-*/
-
-bool is_even_or_odd(int x, bool check_even) {
+/// @brief Constexpr version to check if a number is even or odd
+template<bool check_even>
+bool is_even_or_odd_constexpr(int x) {
   if constexpr (check_even) {
     return x % 2 == 0;
   } else {
     return x % 2 != 0;
   }
 }
+//
+template bool is_even_or_odd_constexpr<true>(int x);
+template bool is_even_or_odd_constexpr<false>(int x);
