@@ -1,4 +1,6 @@
-BasedOnStyle: Google
-ColumnLimit: '120'
-AllowShortFunctionsOnASingleLine: false
-AllowShortLambdasOnASingleLine: false
+Language:        Cpp
+BasedOnStyle:  LLVM
+TabWidth:        4
+ColumnLimit:    120
+IndentWidth: 4
+AlwaysBreakTemplateDeclarations: true
