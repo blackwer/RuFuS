@@ -92,8 +92,7 @@ TEST(RufusAccessorTests, AccessorSharedValue) {
 }
 
 using vector_or_scalar = std::variant<double, std::vector<double>>;
-
-void test_variant_jit(const vector_or_scalar& x, vector_or_scalar &y, size_t N) {           
+void test_variant_jit(const vector_or_scalar& x, vector_or_scalar &y, size_t N) {
   std::string func_str = "axpby(double,std::variant<double,std::vector<double,std::allocator<double>>>const&,double,std::variant<double,std::vector<double,std::allocator<double>>>&,unsignedlong,bool,bool)";
   using FuncType = void (*)(double, const vector_or_scalar&, double, vector_or_scalar&, std::size_t, bool, bool);
 
@@ -111,6 +110,18 @@ void test_variant_jit(const vector_or_scalar& x, vector_or_scalar &y, size_t N) 
   axpby_jit(a, x, b, y, N, is_x_shared, is_y_shared);
 }
 
+void axpby_unoptimized(double a, const vector_or_scalar &x, double b, vector_or_scalar &y, std::size_t N, bool is_x_shared, bool is_y_shared) {
+  for (std::size_t i = 0; i < N; ++i) {
+    double x_val = is_x_shared ? std::get<double>(x) : std::get<std::vector<double>>(x)[i];
+    double y_val = is_y_shared ? std::get<double>(y) : std::get<std::vector<double>>(y)[i];
+    double result = a * x_val + b * y_val;
+    if (is_y_shared) {
+      std::get<double>(y) = result;
+    } else {
+      std::get<std::vector<double>>(y)[i] = result;
+    }
+  }
+}
 
 template<bool is_x_shared, bool is_y_shared>
 void axpby_constexpr(double a, const vector_or_scalar &x, double b, vector_or_scalar &y, std::size_t N) {
@@ -126,6 +137,37 @@ void axpby_constexpr(double a, const vector_or_scalar &x, double b, vector_or_sc
   }
 }
 
+void axpby_raw(double a, const vector_or_scalar &x, double b, vector_or_scalar &y, std::size_t N, bool is_x_shared, bool is_y_shared) {   
+  if (is_x_shared && is_y_shared) {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<double>(x);
+      double y_val = std::get<double>(y);
+      double result = a * x_val + b * y_val;
+      std::get<double>(y) = result;
+    }
+  } else if (is_x_shared && !is_y_shared) {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<double>(x);
+      double y_val = std::get<std::vector<double>>(y)[i];
+      double result = a * x_val + b * y_val;
+      std::get<std::vector<double>>(y)[i] = result;
+    }
+  } else if (!is_x_shared && is_y_shared) {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<std::vector<double>>(x)[i];
+      double y_val = std::get<double>(y);
+      double result = a * x_val + b * y_val;
+      std::get<double>(y) = result;
+    }
+  } else {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<std::vector<double>>(x)[i];
+      double y_val = std::get<std::vector<double>>(y)[i];
+      double result = a * x_val + b * y_val;
+      std::get<std::vector<double>>(y)[i] = result;
+    }
+  }
+}
 
 TEST(RufusAccessorTests, VariantAccessor) {
   size_t N = rand() % 1000 + 1000;  // between 1000 and 1999 to avoid constexpr optimizations
@@ -135,6 +177,14 @@ TEST(RufusAccessorTests, VariantAccessor) {
   vector_or_scalar x_shared = x_shared_value;
   vector_or_scalar x_non_shared = x_vec;
   vector_or_scalar y_variant = y_vec;
+
+  // Touch x and y to avoid lazy allocation issues
+  for (size_t i = 0; i < N; ++i) {
+    double xi = std::get<std::vector<double>>(x_non_shared)[i];
+    double yi = std::get<std::vector<double>>(y_variant)[i];
+    EXPECT_DOUBLE_EQ(xi, 1.0);
+    EXPECT_DOUBLE_EQ(yi, 1.0);
+  }
 
   // time it shared
   auto start = std::chrono::high_resolution_clock::now();
@@ -163,10 +213,21 @@ TEST(RufusAccessorTests, VariantAccessor) {
   axpby_constexpr<false, false>(2.0, x_non_shared, 3.0, y_variant, N);
   auto end3 = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> duration3 = end3 - start3;
-  std::cout << "NoAccessorRawValue took " << duration3.count() << " ms" << std::endl;
+  std::cout << "VariantAccessorConstexpr took " << duration3.count() << " ms" << std::endl;
 
   for (size_t i = 0; i < N; ++i) {
     EXPECT_DOUBLE_EQ(std::get<std::vector<double>>(y_variant)[i], 2.0 * 1.0 + 3.0 * (2.0 * 1.0 + 3.0 * (2.0 * x_shared_value + 3.0 * 1.0)));
+  }
+
+  // time it unoptimized
+  auto start4 = std::chrono::high_resolution_clock::now();
+  axpby_raw(2.0, x_non_shared, 3.0, y_variant, N, false, false);
+  auto end4 = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> duration4 = end4 - start4;
+  std::cout << "VariantAccessorUnoptimized took " << duration4.count() << " ms" << std::endl;
+
+  for (size_t i = 0; i < N; ++i) {
+    EXPECT_DOUBLE_EQ(std::get<std::vector<double>>(y_variant)[i], 2.0 * 1.0 + 3.0 * (2.0 * 1.0 + 3.0 * (2.0 * 1.0 + 3.0 * (2.0 * x_shared_value + 3.0 * 1.0))));
   }
 }
 

@@ -21,3 +21,35 @@ void axpby(double a, const vector_or_scalar &x, double b, vector_or_scalar &y, s
     }
   }
 }
+
+void axpby_explicit_branches(double a, const vector_or_scalar &x, double b, vector_or_scalar &y, std::size_t N, bool is_x_shared, bool is_y_shared) {   
+  if (is_x_shared && is_y_shared) {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<double>(x);
+      double y_val = std::get<double>(y);
+      double result = a * x_val + b * y_val;
+      std::get<double>(y) = result;
+    }
+  } else if (is_x_shared && !is_y_shared) {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<double>(x);
+      double y_val = std::get<std::vector<double>>(y)[i];
+      double result = a * x_val + b * y_val;
+      std::get<std::vector<double>>(y)[i] = result;
+    }
+  } else if (!is_x_shared && is_y_shared) {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<std::vector<double>>(x)[i];
+      double y_val = std::get<double>(y);
+      double result = a * x_val + b * y_val;
+      std::get<double>(y) = result;
+    }
+  } else {
+    for (std::size_t i = 0; i < N; ++i) {
+      double x_val = std::get<std::vector<double>>(x)[i];
+      double y_val = std::get<std::vector<double>>(y)[i];
+      double result = a * x_val + b * y_val;
+      std::get<std::vector<double>>(y)[i] = result;
+    }
+  }
+}
