@@ -1,9 +1,9 @@
-#include "hot_loop_ir.h"
-#include <rufus.hpp>
-
 #include <array>
 #include <iostream>
+#include <rufus.hpp>
 #include <vector>
+
+#include "hot_loop_ir.h"
 
 // Test helper
 void test_jit(RuFuS &RS, const std::string &func_str, int N) {
