@@ -48,6 +48,9 @@
 #include <llvm/ExecutionEngine/Orc/Debugging/PerfSupportPlugin.h>
 #include <llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderPerf.h>
 
+// For dumping ASM
+#include <llvm/IR/LegacyPassManager.h>
+
 #include <algorithm>
 #include <iomanip>
 #include <memory>
@@ -532,6 +535,7 @@ void RuFuS::Impl::optimize_for_jit(llvm::Module *M, llvm::TargetMachine *TM) {
             F.addFnAttr("no-nans-fp-math", "true");
             F.addFnAttr("no-signed-zeros-fp-math", "true");
             F.addFnAttr("unsafe-fp-math", "true");
+            F.addFnAttr("fp-constract", "fast");
             mark_lambdas_for_inlining(&F);
         }
     }
@@ -650,7 +654,7 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
     llvm::Function *specialized_func = impl->clone_and_specialize_arguments(F, const_function_args, specialized_name);
 
     impl->specialize_internal_variables(specialized_func, const_internal_vars);
-    // impl->inline_all_calls(specialized_func);
+    impl->inline_all_calls(specialized_func);
     impl->strip_loop_metadata(specialized_func);
     impl->fix_function_attributes(specialized_func);
 
@@ -716,6 +720,55 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name, const std::map<
     return compile(specialized_name);
 }
 
+void dump_optimized_ir(llvm::Module *M, llvm::StringRef func_name, llvm::raw_ostream &OS) {
+    llvm::Function *F = M->getFunction(func_name);
+    if (!F) {
+        OS << "; Function " << func_name << " not found in module\n";
+        return;
+    }
+
+    // Print type declarations and globals the function references
+    // (optional but helpful for readability)
+    OS << "; ====== Optimized IR for: " << func_name << " ======\n";
+
+    // Print the function's type
+    F->print(OS);
+    OS << "\n";
+    OS.flush();
+}
+
+std::string dump_assembly(llvm::Module *M, llvm::TargetMachine *TM,
+                          llvm::StringRef func_name) {
+    auto ClonedModule = llvm::CloneModule(*M);
+
+    std::vector<llvm::Function *> to_delete;
+    for (auto &F : *ClonedModule) {
+        if (F.isDeclaration())
+            continue;
+        if (F.getName() != func_name)
+            to_delete.push_back(&F);
+    }
+    for (auto *F : to_delete) {
+        F->replaceAllUsesWith(llvm::UndefValue::get(F->getType()));
+        F->eraseFromParent();
+    }
+
+    llvm::SmallVector<char, 0> asm_buf;
+    llvm::raw_svector_ostream asm_os(asm_buf);
+
+    llvm::legacy::PassManager PM;
+    TM->Options.MCOptions.AsmVerbose = true;
+
+    if (TM->addPassesToEmitFile(PM, asm_os, nullptr,
+                                llvm::CodeGenFileType::AssemblyFile)) {
+        return "; ERROR: Target does not support assembly emission\n";
+    }
+
+    PM.run(*ClonedModule);
+
+    return std::string(asm_buf.begin(), asm_buf.end());
+}
+
 std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
     auto &JD = impl->JIT->getMainJITDylib();
     auto &ES = impl->JIT->getExecutionSession();
@@ -758,6 +811,10 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
         impl->first_compile = false;
 
     impl->optimize_for_jit(new_module.get(), impl->TM.get());
+    dump_optimized_ir(new_module.get(), target_func->getName(), impl->debug_out);
+    std::string asm_text = dump_assembly(new_module.get(), impl->TM.get(), target_func->getName());
+    impl->debug_out << "\n# ====== ASSEMBLY ======\n" << asm_text << "\n";
+
     for (auto &F : *new_module) {
         if (F.isDeclaration())
             continue;
