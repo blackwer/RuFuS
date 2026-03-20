@@ -1,4 +1,4 @@
-embed_ir_as_header(hot_loop hot_loop.cpp)
+rufus_embed_ir_as_header(hot_loop hot_loop.cpp)
 
 # Proof of concept executable
 add_executable(demo main.cpp)

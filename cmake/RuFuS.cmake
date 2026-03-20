@@ -1,3 +1,5 @@
+cmake_policy(SET CMP0116 NEW) # Ninja dependency following
+
 if(NOT DEFINED RUFUS_CMAKE_DIR)
     set(RUFUS_CMAKE_DIR ${CMAKE_CURRENT_LIST_DIR} CACHE INTERNAL "")
 endif()
@@ -32,10 +34,10 @@ endif()
 
 unset(CMAKE_REQUIRED_FLAGS)
 
-function(embed_ir_as_header target_name source_file)
+function(rufus_embed_ir_as_header target_name source_file)
     # Parse additional arguments for include directories
     set(options "")
-    set(oneValueArgs "")
+    set(oneValueArgs FROM_TARGET)
     set(multiValueArgs INCLUDES DEFINITIONS)
     cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -60,16 +62,27 @@ function(embed_ir_as_header target_name source_file)
         list(APPEND COMPILE_FLAGS -I${dir})
     endforeach()
 
+    if(ARG_FROM_TARGET)
+        set(TARGET_INCLUDES
+            "$<LIST:TRANSFORM,$<TARGET_PROPERTY:${ARG_FROM_TARGET},INCLUDE_DIRECTORIES>,PREPEND,-I>"
+            "$<LIST:TRANSFORM,$<TARGET_PROPERTY:${ARG_FROM_TARGET},INTERFACE_INCLUDE_DIRECTORIES>,PREPEND,-I>")
+    else()
+        set(TARGET_INCLUDES "")
+    endif()
+
     # Generate IR
     add_custom_command(
         OUTPUT ${IR_FILE}
-        COMMAND ${RUFUS_CLANG_EXECUTABLE} ${COMPILE_FLAGS}
-            -S -emit-llvm -O0 -march=${X86_64_LEVEL}
-            -fno-discard-value-names
-            -DNDEBUG
-            ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
-            -o ${IR_FILE}
-        DEPENDS ${source_file}
+        COMMAND ${RUFUS_CLANG_EXECUTABLE} ${COMPILE_FLAGS} ${TARGET_INCLUDES}
+                -S -emit-llvm -O0 -march=${X86_64_LEVEL}
+                -fno-discard-value-names
+                -DNDEBUG
+                -MD -MF ${IR_FILE}.d
+                ${CMAKE_CURRENT_SOURCE_DIR}/${source_file}
+                -o ${IR_FILE}
+            DEPENDS ${source_file}
+            DEPFILE ${IR_FILE}.d
+            COMMAND_EXPAND_LISTS
         VERBATIM
     )
 
@@ -91,4 +104,9 @@ function(embed_ir_as_header target_name source_file)
     target_sources(${target_name} INTERFACE ${HEADER_FILE})
     target_include_directories(${target_name} INTERFACE
         ${CMAKE_CURRENT_BINARY_DIR})
+endfunction()
+
+function(embed_ir_as_header target_name source_file)
+    message(DEPRECATION "embed_ir_as_header() is deprecated, use rufus_embed_ir_as_header() instead")
+    rufus_embed_ir_as_header(${target_name} ${source_file} ${ARGN})
 endfunction()
