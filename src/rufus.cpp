@@ -654,7 +654,7 @@ RuFuS &RuFuS::specialize_function(const std::string &demangled_name, const std::
     llvm::Function *specialized_func = impl->clone_and_specialize_arguments(F, const_function_args, specialized_name);
 
     impl->specialize_internal_variables(specialized_func, const_internal_vars);
-    impl->inline_all_calls(specialized_func);
+    // impl->inline_all_calls(specialized_func);
     impl->strip_loop_metadata(specialized_func);
     impl->fix_function_attributes(specialized_func);
 
