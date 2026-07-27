@@ -98,6 +98,7 @@ struct RuFuS::Impl {
 
     unsigned MaxVectorWidth = 128;
     bool first_compile = true;
+    bool debug = getenv("RUFUS_DEBUG");
 
     llvm::raw_ostream &debug_out;
 };
@@ -807,13 +808,42 @@ std::uintptr_t RuFuS::compile(const std::string &demangled_name) {
             GV->eraseFromParent();
         if (auto *GV = new_module->getNamedGlobal("llvm.global_dtors"))
             GV->eraseFromParent();
+
+        // Reduce to the function plus its transitive callee closure so optimize/verify/JIT
+        // scale with one function rather than the whole accumulated module.
+        if (llvm::Function *root = new_module->getFunction(target_func->getName())) {
+            std::set<llvm::Function *> keep;
+            std::vector<llvm::Function *> work = {root};
+            keep.insert(root);
+            while (!work.empty()) {
+                llvm::Function *F = work.back();
+                work.pop_back();
+                for (llvm::BasicBlock &BB : *F)
+                    for (llvm::Instruction &I : BB)
+                        for (llvm::Value *Op : I.operands())
+                            if (auto *Callee = llvm::dyn_cast<llvm::Function>(Op))
+                                if (!Callee->isDeclaration() && keep.insert(Callee).second)
+                                    work.push_back(Callee);
+            }
+
+            std::vector<llvm::Function *> to_delete;
+            for (auto &F : *new_module)
+                if (!F.isDeclaration() && !keep.count(&F))
+                    to_delete.push_back(&F);
+            for (auto *F : to_delete) {
+                F->replaceAllUsesWith(llvm::UndefValue::get(F->getType()));
+                F->eraseFromParent();
+            }
+        }
     } else
         impl->first_compile = false;
 
     impl->optimize_for_jit(new_module.get(), impl->TM.get());
-    dump_optimized_ir(new_module.get(), target_func->getName(), impl->debug_out);
-    std::string asm_text = dump_assembly(new_module.get(), impl->TM.get(), target_func->getName());
-    impl->debug_out << "\n# ====== ASSEMBLY ======\n" << asm_text << "\n";
+    if (impl->debug) {
+        dump_optimized_ir(new_module.get(), target_func->getName(), impl->debug_out);
+        std::string asm_text = dump_assembly(new_module.get(), impl->TM.get(), target_func->getName());
+        impl->debug_out << "\n# ====== ASSEMBLY ======\n" << asm_text << "\n";
+    }
 
     for (auto &F : *new_module) {
         if (F.isDeclaration())
