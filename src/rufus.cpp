@@ -279,7 +279,6 @@ llvm::FunctionType *RuFuS::Impl::create_specialized_function_type(llvm::Function
 }
 
 void RuFuS::Impl::replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Constant *ConstVal) {
-
     llvm::SmallVector<llvm::Instruction *, 16> to_remove;
 
     // Collect all users and replace loads, mark stores for deletion
@@ -304,7 +303,6 @@ void RuFuS::Impl::replace_alloca_with_constant(llvm::AllocaInst *AI, llvm::Const
 }
 
 void RuFuS::Impl::specialize_internal_variables(llvm::Function *F, const std::map<std::string, int> &const_vars) {
-
     if (const_vars.empty())
         return;
 
